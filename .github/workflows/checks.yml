@@ -1,0 +1,60 @@
+name: Checks
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  tests:
+    runs-on: ${{ fromJSON(vars.RUNNER_CHECKS || '"warp-ubuntu-latest-x64-2x"') }}
+    container: node:22
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Unit tests and lock-down contract
+        run: |-
+          set -eu
+          git config --global --add safe.directory "$PWD"
+          apt-get update && apt-get install -y --no-install-recommends python3 python3-yaml
+          node --test '**/*.test.mjs'
+          python3 -m unittest discover -s plugins/bot-channels
+          bash tests/contract/pm-bot.sh
+  image:
+    # Builds the image, smoke-tests that same image, and publishes it from main only.
+    runs-on: ${{ fromJSON(vars.RUNNER_IMAGE || '"warp-ubuntu-latest-x64-4x"') }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # The skills: bakers-build's bundle and two upstreams pinned by commit (superpowers v7.0.0,
+      # mattpocock/skills v1.3.2); tests/contract/pm-bot.sh checks these lines.
+      - name: Build
+        run: |-
+          docker build --label "org.opencontainers.image.revision=$GITHUB_SHA" -t "$IMAGE:$GITHUB_SHA" \
+            --build-context bundle=https://github.com/bakers-build/bakers-build.git#next:.claude/skills/bakers-build \
+            --build-context superpowers=https://github.com/obra/superpowers.git#bb92a77741419a4ab5f06e711a283343f1ada0c3 \
+            --build-context mattpocock=https://github.com/mattpocock/skills.git#d1478fcb140db0b93c0c8df17bcfd311844749d0 .
+      - name: Smoke-test the image
+        run: bash tests/contract/pm-bot-image.sh "$IMAGE:$GITHUB_SHA"
+      - name: Publish
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |-
+          set -euo pipefail
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker tag "$IMAGE:$GITHUB_SHA" "$IMAGE:$GITHUB_REF_NAME"
+          docker push "$IMAGE:$GITHUB_SHA"
+          docker push "$IMAGE:$GITHUB_REF_NAME"

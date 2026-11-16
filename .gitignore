@@ -6,3 +6,5 @@
 /.bakers/log.txt
 /.bakers/ui-refresh
 /.bakers/*.frozen.json
+/.bakers-worktrees/
+/.bakers/*.bootstrapped.json

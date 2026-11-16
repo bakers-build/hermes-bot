@@ -159,15 +159,18 @@ for word in 'labels_add: ["human-accept", "ticket-question"]' 'labels_add: ["hum
   dependency 'data model' 'public interface' authentication permissions 'build, CI or deployment configuration'; do
   grep -qF -- "$word" "$SOUL" || fail "$SOUL does not name $word"
 done
-grep -F 'labels_add: ["human-review", "ticket-question"]' "$SOUL" | grep -qF 'only after the requester says yes' \
+# The set and its condition are one adjacent phrase, and the persona names "human-review" once:
+# the sets share a table row, so a line-based check would let a second, unconfirmed set through.
+grep -qF 'labels_add: ["human-review", "ticket-question"]` only after the requester says yes' "$SOUL" \
   || fail "$SOUL sets human-review outside the requester's yes"
+[ "$(grep -oF '"human-review"' "$SOUL" | wc -l | tr -d ' ')" = 1 ] \
+  || fail "$SOUL names human-review in more than the requester's yes"
 if grep -nE '\[[^]]*"auto"' "$SOUL" "$BOT/README.md"; then
   fail "persona or README hands over with the label auto"
 fi
 if grep -noE '\[[^]]*"human-review"[^]]*\]' "$SOUL" "$BOT/README.md" | grep -vF '["human-review", "ticket-question"]'; then
   fail "persona or README sets human-review in another label set"
 fi
-[ "$(grep -cF '"human-review"' "$SOUL")" = 1 ] || fail "$SOUL names human-review in more than the requester's yes"
 pass "the hand-over proposes a charged review and sets human-review only after the requester's yes, never auto"
 
 python3 - "$BOT/slack-app-manifest.yaml" <<'PY' || fail "Slack app manifest breaks the channel contract (see above)"

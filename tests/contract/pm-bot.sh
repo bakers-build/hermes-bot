@@ -17,8 +17,10 @@
 #   - the clone reader is a pinned filesystem server with read tools only
 #   - nothing in  is a relay, calls JSON:API or exchanges a token
 #   - the bot carries no skill of its own (skills/); SOUL.template.md gives
-#     bb-create-ticket its host context, adds the label auto on hand-over, and carries status
-#     and the answer path
+#     bb-create-ticket its host context, judges with the six risk classes whether a charged
+#     code review is advisable, hands over with one of three label sets (human-accept, or
+#     human-review only after the requester says yes, or human-accept with review-declined),
+#     never with auto, and carries status and the answer path
 #   - no bb_question tool is named anywhere in the bot
 #   - every user in the allowed channels is served unless an allowlist is set
 #   - poller, client and plugin call no LLM, except the plugin's language.py, which only takes
@@ -33,7 +35,7 @@
 #   - the bot has no install script (bin/, lib/running.sh)
 #   - every image build line passes the bundle and the two pinned upstream skill contexts
 #   - the template's compose service runs the image with exactly two mounts
-#     (data read-write, clone read-only), no Docker socket, restart
+#     (data read-write, clone read-only), no Docker socket, no .bakers.env, restart
 #     unless-stopped, every capability dropped but the ones Hermes' bootstrap
 #     needs, and no-new-privileges
 # Needs python3 with PyYAML.
@@ -143,12 +145,30 @@ pass "no bot-owned skill"
 # SOUL.md is the skill's host: its host context, the routing, status and the answer path.
 SOUL="$BOT/SOUL.template.md"
 [ ! -e "$BOT/SOUL.md" ] || fail "$BOT/SOUL.md is back; the entrypoint renders SOUL.template.md"
-for word in bb-create-ticket 'Slack user' /archives/ 'labels_add: ["auto", "ticket-question"]' labels_remove frozen 'Answered in Slack by' Question \
+for word in bb-create-ticket 'Slack user' /archives/ labels_remove frozen 'Answered in Slack by' Question \
   'technical problem' mcp_bakers__tool_api__ bakers_ticket_search bakers_ticket_read 'your user' bakers_user_read 'not in a checkout' '${PM_BOT_PROJECT}' \
   '${PM_BOT_TICKET_WORKFLOW}' '${PM_BOT_CONDUCTOR_TEXT}' '${SLACK_WORKSPACE_URL}/archives/<channel ID>' 'trusted line' 'Slack channel'; do
   grep -qF -- "$word" "$SOUL" || fail "$SOUL does not name $word"
 done
 pass "SOUL.template.md gives bb-create-ticket its host context and carries status and answers"
+
+# The hand-over: the bot judges whether a code review is advisable, proposes it as charged,
+# and sets human-review only after the requester's yes. It never hands over with auto.
+for word in 'labels_add: ["human-accept", "ticket-question"]' 'labels_add: ["human-review", "ticket-question"]' \
+  'labels_add: ["human-accept", "ticket-question", "review-declined"]' 'only after the requester says yes' charged \
+  dependency 'data model' 'public interface' authentication permissions 'build, CI or deployment configuration'; do
+  grep -qF -- "$word" "$SOUL" || fail "$SOUL does not name $word"
+done
+grep -F 'labels_add: ["human-review", "ticket-question"]' "$SOUL" | grep -qF 'only after the requester says yes' \
+  || fail "$SOUL sets human-review outside the requester's yes"
+if grep -nE '\[[^]]*"auto"' "$SOUL" "$BOT/README.md"; then
+  fail "persona or README hands over with the label auto"
+fi
+if grep -noE '\[[^]]*"human-review"[^]]*\]' "$SOUL" "$BOT/README.md" | grep -vF '["human-review", "ticket-question"]'; then
+  fail "persona or README sets human-review in another label set"
+fi
+[ "$(grep -cF '"human-review"' "$SOUL")" = 1 ] || fail "$SOUL names human-review in more than the requester's yes"
+pass "the hand-over proposes a charged review and sets human-review only after the requester's yes, never auto"
 
 python3 - "$BOT/slack-app-manifest.yaml" <<'PY' || fail "Slack app manifest breaks the channel contract (see above)"
 import sys, yaml
@@ -286,6 +306,7 @@ vols = [str(v) for v in svc.get("volumes") or []]
 need(vols == ["${PM_BOT_DATA}:/opt/data", "${PM_BOT_CLONE}:/opt/clone:ro"],
      f"volumes are {vols}, not the data directory and the read-only clone")
 need("docker.sock" not in text, "the Docker socket appears in the compose file")
+need(".bakers.env" not in text, "the conductor's .bakers.env appears in the compose file")
 for key in ("privileged", "pid", "ipc", "network_mode", "devices", "volumes_from", "user", "cgroup_parent"):
     need(key not in svc, f"{key} is set")
 need(svc.get("cap_drop") == ["ALL"], "cap_drop is not [ALL]")
@@ -299,7 +320,7 @@ for e in errors:
     print("FAIL:", e, file=sys.stderr)
 sys.exit(1 if errors else 0)
 PY
-pass "compose: two mounts (clone read-only), no Docker socket, unless-stopped, capabilities dropped"
+pass "compose: two mounts (clone read-only), no Docker socket, no .bakers.env, unless-stopped, capabilities dropped"
 
 echo "OK: pm-bot lock-down and configurability contract holds"
 

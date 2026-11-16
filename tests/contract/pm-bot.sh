@@ -20,7 +20,7 @@
 #     bb-create-ticket its host context, judges with the six risk classes whether a charged
 #     code review is advisable, hands over with one of three label sets (human-accept, or
 #     human-review only after the requester says yes, or human-accept with review-declined),
-#     never with auto, and carries status and the answer path
+#     never with auto in any spelling, and carries status and the answer path
 #   - no bb_question tool is named anywhere in the bot
 #   - every user in the allowed channels is served unless an allowlist is set
 #   - poller, client and plugin call no LLM, except the plugin's language.py, which only takes
@@ -159,14 +159,16 @@ for word in 'labels_add: ["human-accept", "ticket-question"]' 'labels_add: ["hum
   dependency 'data model' 'public interface' authentication permissions 'build, CI or deployment configuration'; do
   grep -qF -- "$word" "$SOUL" || fail "$SOUL does not name $word"
 done
-# The set and its condition are one adjacent phrase, and the persona names "human-review" once:
-# the sets share a table row, so a line-based check would let a second, unconfirmed set through.
-grep -qF 'labels_add: ["human-review", "ticket-question"]` only after the requester says yes' "$SOUL" \
-  || fail "$SOUL sets human-review outside the requester's yes"
-[ "$(grep -oF '"human-review"' "$SOUL" | wc -l | tr -d ' ')" = 1 ] \
+# The set and its condition are one adjacent phrase, and the persona names human-review once, in
+# any spelling (backticks, quotes, prose, any case): the sets share a table row, so a line-based
+# check would let a second, unconfirmed set through.
+grep -qF 'labels_add: ["human-review", "ticket-question"]` only after the requester says yes to the review;' "$SOUL" \
+  || fail "$SOUL sets human-review outside the requester's yes to the review"
+[ "$(grep -oiw 'human-review' "$SOUL" | wc -l | tr -d ' ')" = 1 ] \
   || fail "$SOUL names human-review in more than the requester's yes"
-if grep -nE '\[[^]]*"auto"' "$SOUL" "$BOT/README.md"; then
-  fail "persona or README hands over with the label auto"
+# auto is not a hand-over label in any spelling or case: neither persona nor README names the word.
+if grep -niwF auto "$SOUL" "$BOT/README.md"; then
+  fail "persona or README names the label auto"
 fi
 if grep -noE '\[[^]]*"human-review"[^]]*\]' "$SOUL" "$BOT/README.md" | grep -vF '["human-review", "ticket-question"]'; then
   fail "persona or README sets human-review in another label set"

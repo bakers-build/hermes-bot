@@ -1,1 +1,8 @@
 /.env
+# bakers.build: transient agent evidence (screenshots, logs) of a ticket run — never committed.
+/assets-ai/
+# bakers.build: machine-local overrides and runtime files beside the committed project config.
+*.config.local.js
+/.bakers/log.txt
+/.bakers/ui-refresh
+/.bakers/*.frozen.json

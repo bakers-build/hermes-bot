@@ -17,8 +17,8 @@
 #   - the clone reader is a pinned filesystem server with read tools only
 #   - nothing in  is a relay, calls JSON:API or exchanges a token
 #   - the bot carries no skill of its own (skills/); SOUL.template.md gives
-#     bb-create-ticket its host context, judges with the six risk classes whether a charged
-#     code review is advisable, hands over with one of three label sets (human-accept, or
+#     bb-create-ticket its host context, judges with the six risk classes whether a code
+#     review is advisable, proposes it without naming its cost, hands over with one of three label sets (human-accept, or
 #     human-review only after the requester says yes, or human-accept with review-declined),
 #     never with auto in any spelling, and carries status and the answer path
 #   - no bb_question tool is named anywhere in the bot
@@ -152,10 +152,11 @@ for word in bb-create-ticket 'Slack user' /archives/ labels_remove frozen 'Answe
 done
 pass "SOUL.template.md gives bb-create-ticket its host context and carries status and answers"
 
-# The hand-over: the bot judges whether a code review is advisable, proposes it as charged,
-# and sets human-review only after the requester's yes. It never hands over with auto.
+# The hand-over: the bot judges whether a code review is advisable, proposes it without naming
+# its cost (the requester already knows a review is charged), and sets human-review only after
+# the requester's yes. It never hands over with auto.
 for word in 'labels_add: ["human-accept", "ticket-question"]' 'labels_add: ["human-review", "ticket-question"]' \
-  'labels_add: ["human-accept", "ticket-question", "review-declined"]' 'only after the requester says yes' charged \
+  'labels_add: ["human-accept", "ticket-question", "review-declined"]' 'only after the requester says yes' \
   dependency 'data model' 'public interface' authentication permissions 'build, CI or deployment configuration'; do
   grep -qF -- "$word" "$SOUL" || fail "$SOUL does not name $word"
 done
@@ -173,7 +174,11 @@ fi
 if grep -noE '\[[^]]*"human-review"[^]]*\]' "$SOUL" "$BOT/README.md" | grep -vF '["human-review", "ticket-question"]'; then
   fail "persona or README sets human-review in another label set"
 fi
-pass "the hand-over proposes a charged review and sets human-review only after the requester's yes, never auto"
+# The proposal names what the review is and why, never its cost: the requester already knows it.
+if git grep -nIiw charged -- "$SOUL"; then
+  fail "$SOUL tells the requester the review is charged; the proposal names what and why only"
+fi
+pass "the hand-over proposes a review without its cost and sets human-review only after the requester's yes, never auto"
 
 python3 - "$BOT/slack-app-manifest.yaml" <<'PY' || fail "Slack app manifest breaks the channel contract (see above)"
 import sys, yaml

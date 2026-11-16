@@ -18,9 +18,10 @@
 #   - nothing in  is a relay, calls JSON:API or exchanges a token
 #   - the bot carries no skill of its own (skills/); SOUL.template.md gives
 #     bb-create-ticket its host context, judges with the six risk classes whether a code
-#     review is advisable, proposes it without naming its cost, hands over with one of three label sets (human-accept, or
-#     human-review only after the requester says yes, or human-accept with review-declined),
-#     never with auto in any spelling, and carries status and the answer path
+#     review is advisable, proposes it without naming its cost, hands over with one of three
+#     label sets (human-accept, or human-review only after the requester says yes, or
+#     human-accept with review-declined), never with auto in any spelling, and carries status
+#     and the answer path
 #   - no bb_question tool is named anywhere in the bot
 #   - every user in the allowed channels is served unless an allowlist is set
 #   - poller, client and plugin call no LLM, except the plugin's language.py, which only takes
@@ -174,7 +175,6 @@ fi
 if grep -noE '\[[^]]*"human-review"[^]]*\]' "$SOUL" "$BOT/README.md" | grep -vF '["human-review", "ticket-question"]'; then
   fail "persona or README sets human-review in another label set"
 fi
-# The proposal names what the review is and why, never its cost: the requester already knows it.
 if git grep -nIiw charged -- "$SOUL"; then
   fail "$SOUL tells the requester the review is charged; the proposal names what and why only"
 fi

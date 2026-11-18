@@ -10,7 +10,7 @@ import { slackStub } from './stubs.mjs';
 
 const messages = JSON.parse(readFileSync(new URL('../poller/messages.json', import.meta.url), 'utf8'));
 
-export async function setup(t, { slackAnswers, ...siteOptions } = {}) {
+export async function setup(t, { slackAnswers, previewZones, ...siteOptions } = {}) {
   const s = await site(siteOptions);
   const slack = await slackStub(slackAnswers);
   t.after(s.close);
@@ -39,6 +39,7 @@ export async function setup(t, { slackAnswers, ...siteOptions } = {}) {
     now: () => clock.now,
     project: PROJECT,
     messages,
+    previewZones,
     log: { log: () => {}, error: (line) => errors.push(line) },
   });
   const poller = start();

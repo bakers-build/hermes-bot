@@ -406,6 +406,30 @@ test('a status line Slack refused is posted on a later pass, once, also after a 
   assert.deepEqual(slack.posts().slice(refused).map((p) => p.text), [messages.runStart.working]);
 });
 
+test('a summary\'s preview link that Slack refused is posted once on a later pass, after a restart, behind its Outcome', async (t) => {
+  const site = 'https://yf-43-web.preview.keytec.de/de/breathwork';
+  const accepted = [];
+  let refusals = 1;
+  const { s, poller, restart } = await setup(t, {
+    previewZones: ['preview.keytec.de'],
+    slackAnswers: {
+      'chat.postMessage': (body) => {
+        if (body.text.includes(site) && refusals-- > 0) return { ok: false, error: 'ratelimited' };
+        accepted.push(body.text);
+        return { ok: true, ts: `1800000000.${String(accepted.length).padStart(6, '0')}` };
+      },
+    },
+  });
+  const ticket = s.addTicket({ state: 'working', links: [thread()] });
+  await poller.pass();
+  s.addComment(ticket, { type: 'summary', body: `### Outcome\n\nThe breathwork page is built.\n\n### Manual review\n\n- [Worktree site](${site})` });
+  await poller.pass();
+  const again = restart();
+  await again.pass();
+  await again.pass();
+  assert.deepEqual(accepted, ['The breathwork page is built.', `${messages.previewLead} Worktree site\n${site}`]);
+});
+
 test('a run whose start line Slack refused once gets its start and end lines once each, in order', async (t) => {
   const accepted = [];
   let refusals = 1;

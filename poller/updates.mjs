@@ -1,9 +1,9 @@
 // Pure core of the poller's status updates between two states: a run starting or ending, a
-// new summary, a preview link, and a heartbeat while a run works in a quiet conversation.
-// No I/O.
+// new summary with the links of its Manual review on a preview zone host, a preview link, and a
+// heartbeat while a run works in a quiet conversation. No I/O.
 
 import { withTicket } from './ticket-footer.mjs';
-import { named, target } from './diff.mjs';
+import { named, section, target } from './diff.mjs';
 import { escape, QUESTION_LABEL, TECHNICAL_PROBLEM_LABEL } from './questions.mjs';
 
 const ENDED = ['done', 'failed', 'expired', 'cancelled'];
@@ -44,13 +44,58 @@ function preview(uri) {
   return !/\/-\/(pipelines|jobs|tree|commits|branches)|\.slack\.com\/archives\//.test(uri) && uri.includes('.ddev.site');
 }
 
+/** The DNS zones of PREVIEW_ZONES (a comma list) under which a summary's links are previews. */
+export const previewZones = (value) =>
+  (value ?? '')
+    .split(',')
+    .map((z) => z.trim().toLowerCase())
+    .filter(Boolean);
+
+// A host one DNS label under a zone, written exactly so: no credentials, no port.
+const LABEL = '[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?';
+const onZone = (url, zones) => {
+  const authority = /^https:\/\/([^/?#]*)(?:[/?#]|$)/i.exec(url)?.[1].toLowerCase();
+  if (!authority || !URL.canParse(url)) return false;
+  return zones.some((zone) => authority.endsWith(`.${zone}`) && new RegExp(`^${LABEL}$`).test(authority.slice(0, -zone.length - 1)));
+};
+
+/**
+ * The links of a summary's Manual review section on a host under one of `zones`, each URL once:
+ * Markdown links with their text (dropped when it holds internal words), `<url>` and bare URLs
+ * without. Code is skipped. Agent text is untrusted, so no other URL ever leaves this function.
+ */
+export function previewLinks(markdown, zones) {
+  if (!zones.length) return [];
+  const found = new Map();
+  let inCode = false;
+  for (const line of section(markdown ?? '', /manual review/i)) {
+    if (/^\s*(```|~~~)/.test(line)) {
+      inCode = !inCode;
+      continue;
+    }
+    if (inCode) continue;
+    const text = line.replace(/`[^`]*`/g, ' ');
+    for (const m of text.matchAll(/\[([^\]]*)\]\(\s*([^)\s]+)\s*\)|<(https:\/\/[^>\s]+)>|(https:\/\/[^\s<>()\[\]]+)/gi)) {
+      const url = m[2] ?? m[3] ?? m[4].replace(/[.,;:!?)]+$/, '');
+      if (found.has(url) || !onZone(url, zones)) continue;
+      const label = (m[1] ?? '').replace(/\*\*|__|(?<!\w)[*_]|[*_](?!\w)/g, '').trim();
+      found.set(url, INTERNAL.some((r) => r.test(label)) ? '' : escape(label));
+    }
+  }
+  return [...found].map(([url, text]) => ({ url, text }));
+}
+
+const boxOnly = (uri) => URL.canParse(uri) && new URL(uri).hostname.endsWith('.ddev.site');
+
 const key = ({ channel, thread_ts }) => (thread_ts ? `${channel}:${thread_ts}` : channel);
 
-const recordOf = (t) => ({
+const recordOf = (t, zones) => ({
   runs: Object.fromEntries(t.runs.map((r) => [r.uuid, r.state])),
   summaries: t.comments.filter((c) => c.type === 'summary').map((c) => c.id),
   links: t.links.map((l) => l.uri),
   lastStart: null,
+  // Summaries from before the poller followed the ticket count as posted.
+  ...(zones.length && { previews: Object.fromEntries(t.comments.filter((c) => c.type === 'summary').map((c) => [c.id, previewLinks(c.body, zones).map((l) => l.url)])) }),
 });
 
 /**
@@ -59,13 +104,15 @@ const recordOf = (t) => ({
  *   conversation: {channel: string, thread_ts?: string}, inherited?: boolean, links: Array<{uri: string, title: string}>,
  *   runs: Array<{uuid: string, state: string, state_at_start: string, started_at: number | null}>,
  *   comments: Array<{id: string, type: string, created: string, body: string}>}>,
- *   now: number, interval: number, messages: any}} input
- *   previous: identifier → what was seen of the ticket; posted: conversation → the poller's last post there, in ms;
- *   tickets: the followed open tickets that were read in this pass
+ *   now: number, interval: number, messages: any, zones?: string[]}} input
+ *   previous: identifier → what was seen of the ticket, with `previews`: summary ID → its posted preview URLs;
+ *   posted: conversation → the poller's last post there, in ms;
+ *   tickets: the followed open tickets that were read in this pass;
+ *   zones: the PREVIEW_ZONES; none posts no summary link and adds no note to a ddev link
  * @returns {{posts: Array<{identifier: string, channel: string, thread_ts?: string, text: string}>,
  *   next: {records: Record<string, any>, posted: Record<string, number>}}}
  */
-export function updates({ previous, posted, tickets, now, interval, messages }) {
+export function updates({ previous, posted, tickets, now, interval, messages, zones = [] }) {
   const records = {};
   const nextPosted = { ...posted };
   const posts = [];
@@ -73,10 +120,12 @@ export function updates({ previous, posted, tickets, now, interval, messages }) 
     nextPosted[key(t.conversation)] ??= now;
     const before = previous[t.identifier];
     if (!before) {
-      records[t.identifier] = recordOf(t);
+      records[t.identifier] = recordOf(t, zones);
       continue;
     }
     const record = (records[t.identifier] = { ...before, runs: { ...before.runs }, summaries: [...before.summaries], links: [...before.links] });
+    // A record from before PREVIEW_ZONES keys no summary, so its old summaries post no links.
+    if (zones.length || before.previews) record.previews = Object.fromEntries(Object.entries(before.previews ?? {}).map(([id, urls]) => [id, [...urls]]));
     // Each post names what it marked as seen, so a failed post can be forgotten and retried.
     const post = (text, undo) => posts.push({ identifier: t.identifier, ...target(t.conversation), text: named(t, text), ...undo });
     const runs = [...t.runs].reverse();
@@ -89,15 +138,28 @@ export function updates({ previous, posted, tickets, now, interval, messages }) 
     };
     // Only a run seen before ending; one first seen closed gets both its lines below.
     for (const r of runs.filter((r) => r.uuid in before.runs && ENDED.includes(r.state) && !ENDED.includes(before.runs[r.uuid]))) end(r, before.runs[r.uuid]);
-    for (const c of t.comments.filter((c) => c.type === 'summary' && !before.summaries.includes(c.id))) {
-      record.summaries.push(c.id);
-      const sentences = outcome(c.body);
-      if (sentences.length) post(sentences.join(' '), { summary: c.id });
+    for (const c of t.comments.filter((c) => c.type === 'summary')) {
+      if (!before.summaries.includes(c.id)) {
+        record.summaries.push(c.id);
+        const sentences = outcome(c.body);
+        if (sentences.length) post(sentences.join(' '), { summary: c.id });
+        if (zones.length) record.previews[c.id] ??= [];
+      }
+      // A keyed summary's preview links not posted yet, right after its Outcome sentences.
+      if (!zones.length || !record.previews[c.id]) continue;
+      for (const l of previewLinks(c.body, zones).filter((l) => !record.previews[c.id].includes(l.url))) {
+        record.previews[c.id].push(l.url);
+        post(`${messages.previewLead} ${l.text}`.trim() + `\n${escape(l.url)}`, { preview: [c.id, l.url] });
+      }
     }
     for (const l of t.links.filter((l) => !before.links.includes(l.uri))) {
       record.links.push(l.uri);
       const title = INTERNAL.some((r) => r.test(l.title ?? '')) ? '' : escape(l.title ?? '');
-      if (preview(l.uri)) post(`${messages.previewLead} ${title}`.trim() + `\n${escape(l.uri)}`, { link: l.uri });
+      if (!preview(l.uri)) continue;
+      // A ddev site opens only on the box: left out beside a preview link of this pass, else marked so.
+      const box = zones.length && boxOnly(l.uri);
+      if (box && posts.some((p) => p.identifier === t.identifier && p.preview)) continue;
+      post(`${messages.previewLead} ${title}`.trim() + `\n${escape(l.uri)}` + (box ? `\n${messages.previewBoxOnly}` : ''), { link: l.uri });
     }
     for (const r of runs) {
       if (r.uuid in record.runs) continue;
@@ -137,4 +199,5 @@ export function forget(records, post) {
   if ('lastStart' in post) record.lastStart = post.lastStart;
   if (post.summary) record.summaries = record.summaries.filter((id) => id !== post.summary);
   if (post.link) record.links = record.links.filter((uri) => uri !== post.link);
+  if (post.preview) record.previews[post.preview[0]] = record.previews[post.preview[0]].filter((url) => url !== post.preview[1]);
 }

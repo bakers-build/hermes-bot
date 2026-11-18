@@ -24,6 +24,7 @@
     "runPaused": "Die Arbeit ist wegen eines Problems unterbrochen; die Entwickler sehen es sich an.",
     "runWaiting": "Dieser Schritt ist fertig und wartet auf eine Entscheidung.",
     "previewLead": "Es gibt etwas zum Ansehen:",
+    "previewBoxOnly": "Dieser Link öffnet sich nur auf der Entwicklungsbox.",
     "stillWorking": "Wir arbeiten noch daran."
   },
   "en": {
@@ -51,6 +52,7 @@
     "runPaused": "The work is paused because of a problem; the developers are looking at it.",
     "runWaiting": "This step is finished and waits for a decision.",
     "previewLead": "There is something to look at:",
+    "previewBoxOnly": "This link opens only on the development box.",
     "stillWorking": "Still working on it."
   }
 }

@@ -48,19 +48,27 @@ export const target = ({ channel, thread_ts }) => (thread_ts ? { channel, thread
 // A sub-ticket shares its ancestor's conversation, so its posts start with its identifier.
 export const named = (t, text) => (t.inherited && !text.startsWith(`${t.identifier} · `) ? `${t.identifier} · ${text}` : text);
 
+/**
+ * The lines of a summary's first section whose heading matches `title`, up to the next heading of
+ * the same or a higher level; none without such a section.
+ */
+export function section(markdown, title) {
+  const lines = markdown.split('\n');
+  const start = lines.findIndex((l) => /^#{1,6}\s/.test(l) && title.test(l));
+  if (start < 0) return [];
+  const level = lines[start].match(/^#+/)[0].length;
+  const end = lines.findIndex((l, i) => i > start && /^#{1,6}\s/.test(l) && l.match(/^#+/)[0].length <= level);
+  return lines.slice(start + 1, end < 0 ? undefined : end);
+}
+
 // The customer-facing part of a summary's "Manual review" section: where and
 // how to test, as the ticket's last state run recorded it. That section is
 // written for the reviewer, so lines meant only for them stay out. Empty when
 // nothing is left.
 function manualReview(markdown) {
-  const lines = markdown.split('\n');
-  const start = lines.findIndex((l) => /^#{1,6}\s.*manual review/i.test(l));
-  if (start < 0) return '';
-  const level = lines[start].match(/^#+/)[0].length;
-  const end = lines.findIndex((l, i) => i > start && /^#{1,6}\s/.test(l) && l.match(/^#+/)[0].length <= level);
   const kept = [];
   let inCode = false;
-  for (const line of lines.slice(start + 1, end < 0 ? undefined : end)) {
+  for (const line of section(markdown, /manual review/i)) {
     if (/^\s*(```|~~~)/.test(line)) {
       inCode = !inCode;
       continue;

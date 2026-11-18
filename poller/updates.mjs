@@ -94,18 +94,20 @@ const recordOf = (t, zones) => ({
   summaries: t.comments.filter((c) => c.type === 'summary').map((c) => c.id),
   links: t.links.map((l) => l.uri),
   lastStart: null,
+  pending: {},
   // Summaries from before the poller followed the ticket count as posted.
   ...(zones.length && { previews: Object.fromEntries(t.comments.filter((c) => c.type === 'summary').map((c) => [c.id, previewLinks(c.body, zones).map((l) => l.url)])) }),
 });
 
 /**
- * @param {{previous: Record<string, {runs: Record<string, string>, summaries: string[], links: string[], lastStart: number | null}>,
- *   posted: Record<string, number>, tickets: Array<{identifier: string, state: string, labels: string[],
+ * @param {{previous: Record<string, {runs: Record<string, string>, summaries: string[], links: string[], lastStart: number | null, pending?: Record<string, string>}>,
+ *   posted: Record<string, number>, tickets: Array<{identifier: string, state: string, labels: string[], frozen?: boolean,
  *   conversation: {channel: string, thread_ts?: string}, inherited?: boolean, links: Array<{uri: string, title: string}>,
  *   runs: Array<{uuid: string, state: string, state_at_start: string, started_at: number | null}>,
  *   comments: Array<{id: string, type: string, created: string, body: string}>}>,
  *   now: number, interval: number, messages: any, zones?: string[]}} input
- *   previous: identifier → what was seen of the ticket, with `previews`: summary ID → its posted preview URLs;
+ *   previous: identifier → what was seen of the ticket, with `previews`: summary ID → its posted preview URLs,
+ *     and `pending`: run UUID → its state before it ended without done, for the paused line the next pass decides;
  *   posted: conversation → the poller's last post there, in ms;
  *   tickets: the followed open tickets that were read in this pass;
  *   zones: the PREVIEW_ZONES; none posts no summary link and adds no note to a ddev link
@@ -123,18 +125,29 @@ export function updates({ previous, posted, tickets, now, interval, messages, zo
       records[t.identifier] = recordOf(t, zones);
       continue;
     }
-    const record = (records[t.identifier] = { ...before, runs: { ...before.runs }, summaries: [...before.summaries], links: [...before.links] });
+    // A record from before the pending paused lines has none.
+    const record = (records[t.identifier] = { ...before, runs: { ...before.runs }, summaries: [...before.summaries], links: [...before.links], pending: { ...before.pending } });
     // A record from before PREVIEW_ZONES keys no summary, so its old summaries post no links.
     if (zones.length || before.previews) record.previews = Object.fromEntries(Object.entries(before.previews ?? {}).map(([id, urls]) => [id, [...urls]]));
     // Each post names what it marked as seen, so a failed post can be forgotten and retried.
     const post = (text, undo) => posts.push({ identifier: t.identifier, ...target(t.conversation), text: named(t, text), ...undo });
     const runs = [...t.runs].reverse();
     const open = t.labels.includes(QUESTION_LABEL) || t.labels.includes(TECHNICAL_PROBLEM_LABEL);
+    // A frozen ticket waits for an answer or for keytec: a run that ended there without done is no problem.
+    const paused = (r) => r.state_at_start === t.state && !open && !t.frozen;
+    // A run that ended without done a pass ago, on a ticket still open, unfrozen and in its state: now it is a problem.
+    for (const [uuid, was] of Object.entries(record.pending)) {
+      delete record.pending[uuid];
+      const r = t.runs.find((r) => r.uuid === uuid);
+      if (r && paused(r)) post(withTicket(messages.runPaused, t, messages), { pending: [uuid, was] });
+    }
     const end = (r, was) => {
       record.runs[r.uuid] = r.state;
       // A run that moved the ticket on is told by its state line; an open question or technical problem by its relayed note.
       if (r.state_at_start !== t.state || open) return;
-      post(r.state === 'done' ? messages.runWaiting : withTicket(messages.runPaused, t, messages), { run: [r.uuid, was] });
+      if (r.state === 'done') post(messages.runWaiting, { run: [r.uuid, was] });
+      // Its label or freeze may reach the ticket a moment after the run ends, so the next pass decides.
+      else if (paused(r)) record.pending[r.uuid] = was;
     };
     // Only a run seen before ending; one first seen closed gets both its lines below.
     for (const r of runs.filter((r) => r.uuid in before.runs && ENDED.includes(r.state) && !ENDED.includes(before.runs[r.uuid]))) end(r, before.runs[r.uuid]);
@@ -192,10 +205,15 @@ export function updates({ previous, posted, tickets, now, interval, messages, zo
 export function forget(records, post) {
   const record = records[post.identifier];
   if (post.run) {
-    if (post.run[1] === undefined) delete record.runs[post.run[0]];
+    if (post.run[1] === undefined) {
+      delete record.runs[post.run[0]];
+      // Its end is seen again with it.
+      delete record.pending[post.run[0]];
+    }
     // A run whose refused start line was forgotten already is retried whole.
     else if (post.run[0] in record.runs) record.runs[post.run[0]] = post.run[1];
   }
+  if (post.pending) record.pending[post.pending[0]] = post.pending[1];
   if ('lastStart' in post) record.lastStart = post.lastStart;
   if (post.summary) record.summaries = record.summaries.filter((id) => id !== post.summary);
   if (post.link) record.links = record.links.filter((uri) => uri !== post.link);

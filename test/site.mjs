@@ -32,8 +32,10 @@ export async function site({ pageSize = 50 } = {}) {
 
   const once = {};
   const lost = {};
+  const before = {};
   const guard = (name, fn) => (args) => {
     s.log.push(`tool ${name}`);
+    before[name]?.(args);
     if (once[name] > 0) {
       once[name] -= 1;
       throw new Error(`${name} failed`);
@@ -113,7 +115,12 @@ export async function site({ pageSize = 50 } = {}) {
   const loseReplyOnce = (name) => {
     lost[name] = 1;
   };
-  return { ...s, state: s, stub, addTicket, addComment, addRun, failOnce, loseReplyOnce, close: stub.close };
+  // beforeTool(tool, fn): fn(args) runs before each later call of that tool answers, to change the
+  // site between two reads of one pass; null removes it.
+  const beforeTool = (name, fn) => {
+    before[name] = fn;
+  };
+  return { ...s, state: s, stub, addTicket, addComment, addRun, failOnce, loseReplyOnce, beforeTool, close: stub.close };
 }
 
 export const thread = (channel = 'C0000000001', ts = '1700000000.000100') => ({

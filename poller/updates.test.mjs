@@ -26,7 +26,7 @@ test('a ticket seen the first time records its runs, summaries and links and pos
   });
   const result = updates({ previous: {}, posted: {}, tickets: [t], now: NOW, interval: INTERVAL, messages });
   assert.deepEqual(result.posts, []);
-  assert.deepEqual(result.next.records['ACME-1'], { runs: { r2: 'running', r1: 'failed' }, summaries: ['c1'], links: ['https://acme-135.ddev.site/prices'], lastStart: null });
+  assert.deepEqual(result.next.records['ACME-1'], { runs: { r2: 'running', r1: 'failed' }, summaries: ['c1'], links: ['https://acme-135.ddev.site/prices'], lastStart: null, pending: {} });
   assert.deepEqual(result.next.posted, { C0000000001: NOW });
 });
 
@@ -50,12 +50,43 @@ test('a run starting within 5 minutes of the last posted start is recorded but n
   assert.equal(later.next.records['ACME-1'].lastStart, NOW);
 });
 
-test('a run that ends failed, expired or cancelled in the same state posts the paused line once', () => {
+test('a run that ends failed, expired or cancelled in the same state posts the paused line once, on the next pass that still finds the ticket open', () => {
   for (const end of ['failed', 'expired', 'cancelled']) {
-    const result = pass([ticket({ runs: [run('r1', end)] })], { previous: { 'ACME-1': { ...seen, runs: { r1: 'running' } } } });
-    assert.deepEqual(result.posts, [{ identifier: 'ACME-1', channel: 'C0000000001', text: messages.runPaused, run: ['r1', 'running'] }]);
-    assert.deepEqual(pass([ticket({ runs: [run('r1', end)] })], { previous: result.next.records }).posts, []);
+    const seenEnd = pass([ticket({ runs: [run('r1', end)] })], { previous: { 'ACME-1': { ...seen, runs: { r1: 'running' } } } });
+    assert.deepEqual(seenEnd.posts, [], end);
+    const next = pass([ticket({ runs: [run('r1', end)] })], { previous: seenEnd.next.records });
+    assert.deepEqual(next.posts, [{ identifier: 'ACME-1', channel: 'C0000000001', text: messages.runPaused, pending: ['r1', 'running'] }], end);
+    assert.deepEqual(pass([ticket({ runs: [run('r1', end)] })], { previous: next.next.records }).posts, [], end);
   }
+});
+
+test('a run that ended not done on a frozen ticket posts nothing, also when its label comes a pass later', () => {
+  const previous = { 'ACME-1': { ...seen, runs: { r1: 'running' } } };
+  for (const end of ['failed', 'expired', 'cancelled']) {
+    const frozen = pass([ticket({ frozen: true, runs: [run('r1', end)] })], { previous });
+    assert.deepEqual(frozen.posts, [], end);
+    for (const label of ['Question', 'technical problem']) {
+      assert.deepEqual(pass([ticket({ frozen: true, labels: [label], runs: [run('r1', end)] })], { previous: frozen.next.records }).posts, [], `${end}, ${label}`);
+    }
+  }
+});
+
+test('a pending paused line is dropped when the next pass finds the ticket frozen, labelled or in another state', () => {
+  const seenEnd = pass([ticket({ runs: [run('r1', 'failed')] })], { previous: { 'ACME-1': { ...seen, runs: { r1: 'running' } } } });
+  for (const later of [{ frozen: true }, { frozen: true, labels: ['technical problem'] }, { labels: ['Question'] }, { state: 'review' }]) {
+    const next = pass([ticket({ ...later, runs: [run('r1', 'failed')] })], { previous: seenEnd.next.records });
+    assert.deepEqual(next.posts, [], JSON.stringify(later));
+    assert.deepEqual(pass([ticket({ runs: [run('r1', 'failed')] })], { previous: next.next.records }).posts, [], JSON.stringify(later));
+  }
+});
+
+test('a refused pending paused line is posted on the following pass, once', () => {
+  const seenEnd = pass([ticket({ runs: [run('r1', 'failed')] })], { previous: { 'ACME-1': { ...seen, runs: { r1: 'running' } } } });
+  const refused = pass([ticket({ runs: [run('r1', 'failed')] })], { previous: seenEnd.next.records });
+  forget(refused.next.records, refused.posts[0]);
+  const retried = pass([ticket({ runs: [run('r1', 'failed')] })], { previous: refused.next.records });
+  assert.deepEqual(texts(retried), [messages.runPaused]);
+  assert.deepEqual(pass([ticket({ runs: [run('r1', 'failed')] })], { previous: retried.next.records }).posts, []);
 });
 
 test('a run that ends done in the same state posts the waiting line, and no run in any end state posts while a question or technical problem is open', () => {
@@ -76,21 +107,31 @@ test('a run whose ticket changed state posts no end line; the state line says it
 
 test('a run first seen already ended, as after an outage, posts its start line and then its end line, once', () => {
   const first = pass([ticket({ runs: [run('r1', 'failed')] })]);
-  assert.deepEqual(texts(first), [messages.runStart.working, messages.runPaused]);
-  assert.deepEqual(pass([ticket({ runs: [run('r1', 'failed')] })], { previous: first.next.records }).posts, []);
+  assert.deepEqual(texts(first), [messages.runStart.working]);
+  const next = pass([ticket({ runs: [run('r1', 'failed')] })], { previous: first.next.records });
+  assert.deepEqual(texts(next), [messages.runPaused]);
+  assert.deepEqual(pass([ticket({ runs: [run('r1', 'failed')] })], { previous: next.next.records }).posts, []);
   assert.deepEqual(texts(pass([ticket({ runs: [run('r1', 'done')] })])), [messages.runStart.working, messages.runWaiting]);
   assert.deepEqual(texts(pass([ticket({ labels: ['Question'], runs: [run('r1', 'done')] })])), [messages.runStart.working]);
   assert.deepEqual(texts(pass([ticket({ state: 'review', runs: [run('r1', 'failed', 'working')] })])), [messages.runStart.working]);
 });
 
 test('a refused end line of a run first seen ended is retried alone; a refused start line retries both', () => {
-  const first = pass([ticket({ runs: [run('r1', 'failed')] })]);
-  const records = structuredClone(first.next.records);
-  forget(records, first.posts[1]);
-  assert.deepEqual(texts(pass([ticket({ runs: [run('r1', 'failed')] })], { previous: records })), [messages.runPaused]);
+  const failed = () => [ticket({ runs: [run('r1', 'failed')] })];
+  const first = pass(failed());
+  const next = pass(failed(), { previous: first.next.records });
+  forget(next.next.records, next.posts[0]);
+  assert.deepEqual(texts(pass(failed(), { previous: next.next.records })), [messages.runPaused]);
   const both = structuredClone(first.next.records);
-  for (const p of first.posts) forget(both, p);
-  assert.deepEqual(texts(pass([ticket({ runs: [run('r1', 'failed')] })], { previous: both })), [messages.runStart.working, messages.runPaused]);
+  forget(both, first.posts[0]);
+  const again = pass(failed(), { previous: both });
+  assert.deepEqual(texts(again), [messages.runStart.working]);
+  const paused = pass(failed(), { previous: again.next.records });
+  assert.deepEqual(texts(paused), [messages.runPaused]);
+  assert.deepEqual(pass(failed(), { previous: paused.next.records }).posts, []);
+  const done = pass([ticket({ runs: [run('r1', 'done')] })]);
+  forget(done.next.records, done.posts[1]);
+  assert.deepEqual(texts(pass([ticket({ runs: [run('r1', 'done')] })], { previous: done.next.records })), [messages.runWaiting]);
 });
 
 test('summary sentences with a run ID or an agent name are left out', () => {
@@ -170,7 +211,7 @@ test('no heartbeat without a running run, outside working and review, or when th
   const previous = { 'ACME-1': { ...seen, runs: { r1: 'running' } } };
   assert.deepEqual(pass([ticket({ runs: [run('r1', 'claimed')] })], { previous, quiet: INTERVAL }).posts, []);
   assert.deepEqual(pass([ticket({ state: 'plan', runs: [run('r1', 'running', 'plan')] })], { previous, quiet: INTERVAL }).posts, []);
-  const ended = pass([ticket({ runs: [run('r1', 'failed'), run('r2', 'running')] })], { previous: { 'ACME-1': { ...previous['ACME-1'], lastStart: NOW } }, quiet: INTERVAL });
+  const ended = pass([ticket({ runs: [run('r1', 'failed'), run('r2', 'running')] })], { previous: { 'ACME-1': { ...previous['ACME-1'], runs: { r1: 'failed' }, pending: { r1: 'running' }, lastStart: NOW } }, quiet: INTERVAL });
   assert.deepEqual(texts(ended), [messages.runPaused]);
 });
 
@@ -180,7 +221,7 @@ test('sub-tickets sharing a conversation get one heartbeat between them, naming 
   assert.deepEqual(texts(pass([running('ACME-2'), running('ACME-3')], { previous, quiet: INTERVAL })), [`ACME-2 · ${messages.stillWorking}`]);
 });
 
-test('one pass orders a sub-ticket\'s lines run end, summary, preview, run start, each naming it', () => {
+test('one pass orders a sub-ticket\'s lines paused run, summary, preview, run start, each naming it', () => {
   const t = ticket({
     identifier: 'ACME-2',
     inherited: true,
@@ -188,7 +229,7 @@ test('one pass orders a sub-ticket\'s lines run end, summary, preview, run start
     comments: [summary('c1', '## Outcome\n\nPrices import now.')],
     links: [{ uri: 'https://acme-135.ddev.site/prices', title: 'Price list' }],
   });
-  const result = pass([t], { previous: { 'ACME-2': { ...seen, runs: { r1: 'running' } } } });
+  const result = pass([t], { previous: { 'ACME-2': { ...seen, runs: { r1: 'failed' }, pending: { r1: 'running' } } } });
   assert.deepEqual(texts(result), [
     `ACME-2 · ${messages.runPaused}`,
     'ACME-2 · Prices import now.',
@@ -203,7 +244,7 @@ test('forgetting a failed post makes the next pass choose it again, and only it'
   assert.equal(first.posts.length, 3);
   for (const p of first.posts.filter((p) => !p.link)) forget(first.next.records, p);
   assert.deepEqual(texts(pass([t], { previous: first.next.records })), ['Prices import now.', messages.runStart.working]);
-  const ended = pass([ticket({ runs: [run('r1', 'failed')] })], { previous: { 'ACME-1': { ...seen, runs: { r1: 'running' } } } });
+  const ended = pass([ticket({ runs: [run('r1', 'done')] })], { previous: { 'ACME-1': { ...seen, runs: { r1: 'running' } } } });
   forget(ended.next.records, ended.posts[0]);
   assert.equal(ended.next.records['ACME-1'].runs.r1, 'running');
 });

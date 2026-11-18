@@ -110,6 +110,6 @@ mcp_servers:
         - tool_api__bakers_ticket_search
         - tool_api__bakers_ticket_update
         - tool_api__bakers_ticket_transition
-        - tool_api__bakers_comment_publish
+        - tool_api__bakers_comment_create
         - tool_api__bakers_ticket_classify
         - tool_api__bakers_user_read

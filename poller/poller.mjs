@@ -240,7 +240,7 @@ export function createPoller({ client, slack, send, stateFile, botChannelsFile, 
     const kept = {};
     for (const t of current.filter((t) => t.conversation && !archived(state, t) && !CLOSED.includes(t.state))) {
       try {
-        const { runs } = await client.tool('bakers_ticket_runs_list', { ticket: t.id });
+        const { runs } = await client.tool('bakers_run_list', { ticket: t.id });
         const { comments } = await client.tool('bakers_ticket_read', { ticket: t.id, newest: ALL_COMMENTS });
         read.push({ ...t, runs: runs ?? [], comments: comments ?? [] });
       } catch (error) {

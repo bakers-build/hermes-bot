@@ -74,7 +74,7 @@ export async function site({ pageSize = 50 } = {}) {
       return { id: t.id, identifier: t.identifier, title: t.title, state: t.state, labels: [...t.labels], links: t.links.map(link), frozen: t.frozen, comments: newest(comments(t), a.newest ?? 2) };
     }),
     // Newest first, as the tool lists them; started_at in epoch seconds.
-    bakers_ticket_runs_list: guard('bakers_ticket_runs_list', (a) => {
+    bakers_run_list: guard('bakers_run_list', (a) => {
       const t = find(a.ticket);
       const runs = s.runs.filter((r) => r.ticket === t.id).reverse();
       return { runs: runs.map(({ ticket, ...r }) => ({ ...r, closed: !['claimed', 'running'].includes(r.state) })), next_offset: null };

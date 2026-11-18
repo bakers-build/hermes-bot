@@ -14,6 +14,8 @@
 #   - bakers.build is reached only through its own MCP endpoint: the remote
 #     server `bakers` at ${BAKERS_URL}/mcp, the API key as a static bearer that
 #     Hermes fills from the env file, exactly eight bakers tools, no OAuth
+#   - the config, poller, plugin, persona and fake site name only bakers tools the server
+#     serves, as pm-bot-mcp-stub.mjs records them
 #   - the clone reader is a pinned filesystem server with read tools only
 #   - nothing in  is a relay, calls JSON:API or exchanges a token
 #   - the bot carries no skill of its own (skills/); SOUL.template.md gives
@@ -115,7 +117,7 @@ need(bakers.get("url") == "${BAKERS_URL}/mcp", "bakers is not ${BAKERS_URL}/mcp"
 need("command" not in bakers, "bakers is started as a local process")
 need(bakers.get("headers") == {"Authorization": "Bearer ${env:BAKERS_API_KEY}"},
      "bakers does not send exactly Authorization: Bearer ${env:BAKERS_API_KEY}")
-eight = ["tool_api__bakers_comment_publish", "tool_api__bakers_ticket_classify", "tool_api__bakers_ticket_create",
+eight = ["tool_api__bakers_comment_create", "tool_api__bakers_ticket_classify", "tool_api__bakers_ticket_create",
          "tool_api__bakers_ticket_read", "tool_api__bakers_ticket_search", "tool_api__bakers_ticket_transition",
          "tool_api__bakers_ticket_update", "tool_api__bakers_user_read"]
 need(sorted((bakers.get("tools") or {}).get("include") or []) == eight,
@@ -132,6 +134,39 @@ for e in errors:
 sys.exit(1 if errors else 0)
 PY
 pass "configuration template keeps the lock-down"
+
+# Every bakers tool the bot names is one the server serves. The stub's TOOLS is the recorded copy of
+# the server's names; a tool the server renamed fails here, not as "Tool not found" on a box.
+python3 - "$TEMPLATE" <<'PY' || fail "the bot names a bakers tool the server does not serve (see above)"
+import glob, re, sys, yaml
+
+served = set(re.findall(r"'(bakers_[a-z_]+)'", open("tests/contract/pm-bot-mcp-stub.mjs").read().split("].map(")[0]))
+if len(served) < 16:
+    sys.exit(f"FAIL: the stub lists {len(served)} bakers tools, not the server's sixteen")
+
+named = []
+with open(sys.argv[1]) as fh:
+    include = ((yaml.safe_load(fh)["mcp_servers"]["bakers"].get("tools") or {}).get("include") or [])
+named += [(sys.argv[1], name.removeprefix("tool_api__")) for name in include]
+def scan(paths, pattern):
+    for path in paths:
+        if ".test." in path or "/test_" in path:
+            continue
+        named.extend((path, name) for name in re.findall(pattern, open(path).read(), re.M))
+scan(sorted(glob.glob("poller/*.mjs") + glob.glob("lib/*.mjs")), r"\.tool\(\s*'(bakers_[a-z_]+)'")
+scan(sorted(glob.glob("plugins/bot-channels/*.py")), r"[\"'](bakers_[a-z_]+)[\"']")
+scan(["SOUL.template.md"], r"`(bakers_[a-z_]+)`")
+scan(["test/site.mjs"], r"^\s*(bakers_[a-z_]+): guard\(")
+
+errors = [f"{path} names {name}" for path, name in named if name not in served]
+for source in ("poller/", "test/site.mjs"):
+    if not any(path.startswith(source) for path, _ in named):
+        errors.append(f"no bakers tool found in {source}; the scan no longer matches it")
+for e in errors:
+    print("FAIL:", e, file=sys.stderr)
+sys.exit(1 if errors else 0)
+PY
+pass "config, poller, plugin, persona and fake site name only tools the server serves"
 
 # No relay, no JSON:API and no token exchange: bakers tools are the only way in.
 if [ -e "$BOT/relay" ] || git grep --untracked -nIE 'pm-relay|/jsonapi|/oauth/token|client_credentials|BAKERS_CLIENT_(ID|SECRET)|create_ticket|answer_question' -- "$BOT" ":!tests/contract"; then

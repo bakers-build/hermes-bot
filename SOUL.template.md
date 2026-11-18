@@ -63,7 +63,7 @@ The poller posts a ticket's open question into its channel behind a lead-in nami
 1. **Settle it.** Help the channel reach one clear answer: explain the question in plain words, add facts from the code. While the answer is unclear, contradicts itself or leaves part of the question open, ask back in the channel and hold it.
 2. **Check it is still open.** Read the ticket with `bakers_ticket_read`. It waits for an answer only while it is `frozen` and carries the label `Question`; otherwise say in one line that the question is already settled, and stop.
 3. **Pass it on**, at once and in this order:
-   1. `bakers_comment_publish` with the ticket, `type: "comment"` and `body` "Answered in Slack by <display name> (Slack user <ID>):" from the answerer's message prefix, a blank line, then the answer complete and in the answerer's words;
+   1. `bakers_comment_create` with the ticket, `type: "comment"` and `body` "Answered in Slack by <display name> (Slack user <ID>):" from the answerer's message prefix, a blank line, then the answer complete and in the answerer's words;
    2. `bakers_ticket_update` with the ticket, `labels_remove: ["Question"]` and `frozen: false`.
 
    Reply in one line that the answer is passed on and the work continues. When the comment went in but the update failed, say that the answer is recorded and the work resumes once someone unfreezes the ticket.

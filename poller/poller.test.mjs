@@ -442,7 +442,7 @@ test('a ticket whose runs cannot be read is skipped for the pass and caught up o
   const ticket = s.addTicket({ state: 'working', links: [thread()] });
   await poller.pass();
   s.addRun(ticket);
-  s.failOnce('bakers_ticket_runs_list');
+  s.failOnce('bakers_run_list');
   await poller.pass();
   assert.deepEqual(slack.posts(), []);
   await poller.pass();

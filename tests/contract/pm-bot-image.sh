@@ -108,8 +108,8 @@ grep -qF "url: $BAKERS_URL/mcp" <<<"$config" || fail "config.yaml does not reach
 pass "config.yaml rendered, no placeholder left but the key Hermes fills, no key in it"
 
 grep -q 'Connected' <<<"$out" || { echo "$out" >&2; fail "Hermes does not connect to /mcp with the API key"; }
-grep -qx 'bakers tools: tool_api__bakers_comment_publish,tool_api__bakers_ticket_classify,tool_api__bakers_ticket_create,tool_api__bakers_ticket_read,tool_api__bakers_ticket_search,tool_api__bakers_ticket_transition,tool_api__bakers_ticket_update,tool_api__bakers_user_read' <<<"$out" \
-  || { echo "$out" >&2; fail "Hermes does not register exactly the eight included tools of the nine offered"; }
+grep -qx 'bakers tools: tool_api__bakers_comment_create,tool_api__bakers_ticket_classify,tool_api__bakers_ticket_create,tool_api__bakers_ticket_read,tool_api__bakers_ticket_search,tool_api__bakers_ticket_transition,tool_api__bakers_ticket_update,tool_api__bakers_user_read' <<<"$out" \
+  || { echo "$out" >&2; fail "Hermes does not register exactly the eight included tools of the sixteen offered"; }
 pass "Hermes connects to /mcp with the API key as bearer and takes exactly the eight tools"
 
 in_data "sed -i 's/^BAKERS_API_KEY=.*/BAKERS_API_KEY=wrong-key/' /d/.env"

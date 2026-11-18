@@ -1,20 +1,32 @@
 // A stand-in for bakers.build's /mcp in the PM bot's image check (pm-bot-image.sh): MCP
 // over streamable HTTP on port 8080, answering only `Authorization: Bearer <BAKERS_API_KEY>`
-// and listing nine bakers tools, one more than the bot's config includes. No dependencies;
-// the check passes this file to `node -e` in a container of the bot's own image.
+// and listing the sixteen bakers tools the server serves, of which the bot's config includes
+// eight. No dependencies; the check passes this file to `node -e` in a container of the bot's
+// own image.
+//
+// TOOLS is the recorded copy of the server's tool names: pm-bot.sh fails when the config, the
+// poller, the plugin, the persona or the fake site names a tool missing here. When the server
+// renames a tool, change it here first.
 import { createServer } from 'node:http';
 
 const KEY = process.env.STUB_KEY;
 const TOOLS = [
+  'bakers_comment_create',
+  'bakers_comment_read',
+  'bakers_conductor_list',
+  'bakers_label_list',
+  'bakers_metric_write',
+  'bakers_project_read',
+  'bakers_run_cancel',
+  'bakers_run_list',
+  'bakers_ticket_classify',
   'bakers_ticket_create',
+  'bakers_ticket_list',
   'bakers_ticket_read',
   'bakers_ticket_search',
-  'bakers_ticket_update',
   'bakers_ticket_transition',
-  'bakers_comment_publish',
-  'bakers_ticket_classify',
+  'bakers_ticket_update',
   'bakers_user_read',
-  'bakers_run_cancel',
 ].map((name) => ({ name: `tool_api__${name}`, description: `${name} (stub)`, inputSchema: { type: 'object', properties: {} } }));
 
 createServer(async (req, res) => {

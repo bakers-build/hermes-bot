@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { forget, updates } from './updates.mjs';
+import { forget, previewZones, updates } from './updates.mjs';
 
 const messages = JSON.parse(readFileSync(new URL('./messages.json', import.meta.url), 'utf8')).de;
 const NOW = Date.parse('2026-11-05T12:00:00Z');
@@ -14,8 +14,8 @@ const summary = (id, body, created = '2026-11-05T11:59:00Z') => ({ id, type: 'su
 const ticket = (fields = {}) => ({ identifier: 'ACME-1', state: 'working', labels: [], conversation: where, links: [], runs: [], comments: [], ...fields });
 const seen = { runs: {}, summaries: [], links: [], lastStart: null };
 // A pass after the ticket was first seen, with the conversation's last post `quiet` ago.
-const pass = (tickets, { previous = { 'ACME-1': seen }, quiet = 0, now = NOW } = {}) =>
-  updates({ previous, posted: { C0000000001: now - quiet }, tickets, now, interval: INTERVAL, messages });
+const pass = (tickets, { previous = { 'ACME-1': seen }, quiet = 0, now = NOW, zones } = {}) =>
+  updates({ previous, posted: { C0000000001: now - quiet }, tickets, now, interval: INTERVAL, messages, zones });
 const texts = (result) => result.posts.map((p) => p.text);
 
 test('a ticket seen the first time records its runs, summaries and links and posts nothing', () => {
@@ -206,4 +206,97 @@ test('forgetting a failed post makes the next pass choose it again, and only it'
   const ended = pass([ticket({ runs: [run('r1', 'failed')] })], { previous: { 'ACME-1': { ...seen, runs: { r1: 'running' } } } });
   forget(ended.next.records, ended.posts[0]);
   assert.equal(ended.next.records['ACME-1'].runs.r1, 'running');
+});
+
+test('PREVIEW_ZONES is a comma list of zones, trimmed and lower-cased; unset or empty gives none', () => {
+  assert.deepEqual(previewZones(' Preview.keytec.de, ,box.example.org ,'), ['preview.keytec.de', 'box.example.org']);
+  assert.deepEqual(previewZones(''), []);
+  assert.deepEqual(previewZones(undefined), []);
+});
+
+const ZONES = ['preview.keytec.de'];
+const SITE = 'https://yf-43-web.preview.keytec.de/de/breathwork';
+const reviewed = (manual, outcome = 'The breathwork page is built.') => `### 🎯 Outcome\n\n${outcome}\n\n### 🧪 Manual review\n\n${manual}\n\n### ➡️ Next action\n\nApprove it.`;
+
+test('a new summary posts its Outcome, then each Manual review link on a preview zone host, once', () => {
+  const comments = [summary('c1', reviewed(`- [Worktree site](${SITE})`))];
+  const result = pass([ticket({ comments })], { zones: ZONES });
+  assert.deepEqual(result.posts, [
+    { identifier: 'ACME-1', channel: 'C0000000001', text: 'The breathwork page is built.', summary: 'c1' },
+    { identifier: 'ACME-1', channel: 'C0000000001', text: `${messages.previewLead} Worktree site\n${SITE}`, preview: ['c1', SITE] },
+  ]);
+  assert.deepEqual(pass([ticket({ comments })], { previous: result.next.records, zones: ZONES }).posts, []);
+});
+
+test('only https links in Manual review on exactly one label under a zone are posted; any other summary URL never is', () => {
+  const never = [
+    '[Other](https://example.org/x)',
+    '[Script](javascript:alert(1))',
+    '[Look-alike](https://yf-43.preview.keytec.de.evil.tld/)',
+    '[Glued](https://evilpreview.keytec.de/)',
+    '[Bare zone](https://preview.keytec.de/)',
+    '[Two labels](https://a.b.preview.keytec.de/)',
+    '[Credentials](https://me:pw@yf-43.preview.keytec.de/)',
+    '[Port](https://yf-43.preview.keytec.de:8443/)',
+    '[Plain http](http://yf-43.preview.keytec.de/)',
+    'Run `https://yf-43.preview.keytec.de/code` or',
+    '```\nhttps://yf-43.preview.keytec.de/fenced\n```',
+  ].join('\n');
+  const body = `### Outcome\n\nThe page is built. See [the site](https://yf-43.preview.keytec.de/outcome).\n\n### Manual review\n\n${never}`;
+  const result = pass([ticket({ comments: [summary('c1', body)] })], { zones: ZONES });
+  assert.deepEqual(texts(result), ['The page is built. See the site.']);
+});
+
+test('bare, angle-bracket and repeated preview links are posted once each, with escaped text or the bare lead', () => {
+  const manual = [
+    '- [Site <new> & **fresh**](https://a-1.preview.keytec.de/x?a=1&b=2)',
+    '- [Opus build](https://a-2.preview.keytec.de/)',
+    '- Open <https://a-3.preview.keytec.de/y> or https://A-4.Preview.keytec.de/z).',
+    '- Again: https://a-3.preview.keytec.de/y',
+  ].join('\n');
+  const result = pass([ticket({ comments: [summary('c1', `### Manual review\n\n${manual}`)] })], { zones: ZONES });
+  assert.deepEqual(texts(result), [
+    `${messages.previewLead} Site &lt;new&gt; &amp; fresh\nhttps://a-1.preview.keytec.de/x?a=1&amp;b=2`,
+    `${messages.previewLead}\nhttps://a-2.preview.keytec.de/`,
+    `${messages.previewLead}\nhttps://a-3.preview.keytec.de/y`,
+    `${messages.previewLead}\nhttps://A-4.Preview.keytec.de/z`,
+  ]);
+});
+
+test('a refused preview post is retried alone on the next pass; summaries from a first sighting or an older record post no links', () => {
+  const other = 'https://yf-43-docs.preview.keytec.de/';
+  const comments = [summary('c1', reviewed(`- [Worktree site](${SITE})\n- [Docs](${other})`))];
+  const first = pass([ticket({ comments })], { zones: ZONES });
+  forget(first.next.records, first.posts[2]);
+  assert.deepEqual(first.next.records['ACME-1'].previews, { c1: [SITE] });
+  assert.deepEqual(texts(pass([ticket({ comments })], { previous: first.next.records, zones: ZONES })), [`${messages.previewLead} Docs\n${other}`]);
+
+  const sighted = updates({ previous: {}, posted: {}, tickets: [ticket({ comments })], now: NOW, interval: INTERVAL, messages, zones: ZONES });
+  assert.deepEqual(sighted.next.records['ACME-1'].previews, { c1: [SITE, other] });
+  assert.deepEqual(pass([ticket({ comments })], { previous: sighted.next.records, zones: ZONES }).posts, []);
+
+  const older = { 'ACME-1': { ...seen, summaries: ['c1'] } };
+  assert.deepEqual(pass([ticket({ comments })], { previous: older, zones: ZONES }).posts, []);
+});
+
+test('with zones, a ddev ticket link is dropped for good when the same pass posts a preview link, and alone carries the box-only note', () => {
+  const ddev = { uri: 'https://yf-43.ddev.site/de/breathwork', title: 'Breathwork' };
+  const comments = [summary('c1', reviewed(`- [Worktree site](${SITE})`))];
+  const both = pass([ticket({ comments, links: [ddev] })], { zones: ZONES });
+  assert.deepEqual(texts(both), ['The breathwork page is built.', `${messages.previewLead} Worktree site\n${SITE}`]);
+  assert.deepEqual(both.next.records['ACME-1'].links, [ddev.uri]);
+  assert.deepEqual(pass([ticket({ comments, links: [ddev] })], { previous: both.next.records, zones: ZONES }).posts, []);
+
+  const alone = pass([ticket({ links: [ddev] })], { zones: ZONES });
+  assert.deepEqual(alone.posts, [{ identifier: 'ACME-1', channel: 'C0000000001', text: `${messages.previewLead} Breathwork\n${ddev.uri}\n${messages.previewBoxOnly}`, link: ddev.uri }]);
+});
+
+test('without zones, summaries post no links and a ddev link carries no note, as before', () => {
+  const ddev = { uri: 'https://yf-43.ddev.site/de/breathwork', title: 'Breathwork' };
+  const comments = [summary('c1', reviewed(`- [Worktree site](${SITE})`))];
+  for (const zones of [undefined, []]) {
+    const result = pass([ticket({ comments, links: [ddev] })], { zones });
+    assert.deepEqual(texts(result), ['The breathwork page is built.', `${messages.previewLead} Breathwork\n${ddev.uri}`]);
+    assert.equal('previews' in result.next.records['ACME-1'], false);
+  }
 });

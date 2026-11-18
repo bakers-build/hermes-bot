@@ -4,8 +4,8 @@
 // channel link, else the thread of its first `chat` link; a sub-ticket without one shares its
 // ancestor's): posts each state change there once and relays its open question or technical
 // problem once. Between states it posts, once each, when a run starts, when a run ends without
-// moving the ticket on, a new summary's outcome and a new preview link, and a heartbeat while a
-// run works and the conversation has been quiet for PM_BOT_HEARTBEAT_INTERVAL. For the channels the bot created it renames a request channel after its
+// moving the ticket on, a new summary's outcome, the links in its Manual review on a host under
+// PREVIEW_ZONES, a new preview link, and a heartbeat while a run works and the conversation has been quiet for PM_BOT_HEARTBEAT_INTERVAL. For the channels the bot created it renames a request channel after its
 // ticket, archives it after the final post, opens a fresh one when the ticket is reopened, and
 // closes a request channel that stayed silent for a week without a ticket. It posts in the bot's
 // language, which the bot-channels plugin writes to bot-language.json. No LLM, no dependencies.
@@ -27,7 +27,7 @@ import { heartbeatInterval, pollInterval } from './interval.mjs';
 import { openNote, QUESTION_LABEL, relay, TECHNICAL_PROBLEM_LABEL } from './questions.mjs';
 import { conversation, conversations } from './tickets.mjs';
 import { withTicket } from './ticket-footer.mjs';
-import { forget, updates } from './updates.mjs';
+import { forget, previewZones, updates } from './updates.mjs';
 
 const fill = (template, values) => template.replace(/\{(\w+)\}/g, (_, key) => values[key]);
 
@@ -83,13 +83,14 @@ export function hermesSend({ channel, thread_ts, text }) {
  * @param {{client: ReturnType<typeof createBakersClient>, slack: ReturnType<typeof createSlack>,
  *   send: (message: {comment: string, kind: 'question' | 'technical_problem', identifier: string, channel: string, thread_ts?: string, text: string}) => Promise<void>,
  *   stateFile: string, botChannelsFile: string, languageFile: string, workspaceUrl: string, now?: () => number,
- *   project: string, messages: {de: any, en: any}, heartbeat?: number, log?: {log: Function, error: Function}}} options
+ *   project: string, messages: {de: any, en: any}, heartbeat?: number, previewZones?: string[], log?: {log: Function, error: Function}}} options
  *   heartbeat: the quiet time in ms after which a working ticket's conversation gets a heartbeat
  *   botChannelsFile: the request channels the bot's plugin opened, which only the plugin writes
  *   languageFile: the bot's language as the plugin read it, {"language": "<ISO 639-1 code>"}; only the plugin writes it
  *   messages: the fixed texts per language
+ *   previewZones: the DNS zones whose hosts' links in a summary's Manual review are posted; none posts none
  */
-export function createPoller({ client, slack, send, stateFile, botChannelsFile, languageFile, workspaceUrl, now = Date.now, project, messages: texts, heartbeat = heartbeatInterval(), log = console }) {
+export function createPoller({ client, slack, send, stateFile, botChannelsFile, languageFile, workspaceUrl, now = Date.now, project, messages: texts, heartbeat = heartbeatInterval(), previewZones: zones = [], log = console }) {
   const stamp = () => new Date().toISOString();
   // The texts of the current pass: the plugin's language, German without texts for it.
   let messages = texts.de;
@@ -248,7 +249,7 @@ export function createPoller({ client, slack, send, stateFile, botChannelsFile, 
         log.error(`${stamp()} updates of ${t.identifier}: ${error.message}`);
       }
     }
-    const { posts, next } = updates({ previous: state.updates, posted: state.posted, tickets: read, now: now(), interval: heartbeat, messages });
+    const { posts, next } = updates({ previous: state.updates, posted: state.posted, tickets: read, now: now(), interval: heartbeat, messages, zones });
     state.updates = { ...kept, ...next.records };
     state.posted = next.posted;
     const refused = new Set();
@@ -396,6 +397,7 @@ if (isMain) {
     project: env('PM_BOT_PROJECT'),
     messages: JSON.parse(await readFile(new URL('./messages.json', import.meta.url), 'utf8')),
     heartbeat: heartbeatInterval(process.env.PM_BOT_HEARTBEAT_INTERVAL),
+    previewZones: previewZones(process.env.PREVIEW_ZONES),
   });
   if (process.argv.includes('--once')) {
     await poller.pass();

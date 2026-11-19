@@ -1,0 +1,7 @@
+{
+  "about": "A run that stops on a technical problem keytec has to solve: a note, the technical problem label and the freeze.",
+  "steps": [
+    { "tool": "bakers_comment_create", "args": { "ticket": "{{ticket}}", "type": "comment", "body": "The test database of the project cannot be reached, so the change cannot be verified." } },
+    { "tool": "bakers_ticket_update", "args": { "ticket": "{{ticket}}", "labels_add": ["technical problem"], "frozen": true } }
+  ]
+}

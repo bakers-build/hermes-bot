@@ -41,6 +41,11 @@
 #     (data read-write, clone read-only), no Docker socket, no .bakers.env, restart
 #     unless-stopped, every capability dropped but the ones Hermes' bootstrap
 #     needs, and no-new-privileges
+#   - the end-to-end test's overlay (tests/e2e/compose.yaml) changes only pm-bot's command,
+#     networks and depends_on, and its env file has every key of .env.example
+#   - platform_toolsets.cli equals .slack, model.base_url comes from PM_BOT_MODEL_BASE_URL
+#     (default Anthropic's), and mode agent runs the poller without the gateway
+#   - CI's image job runs the end-to-end test on the image it built, before Publish
 # Needs python3 with PyYAML.
 # ---------------------------------------------------------------------------
 set -euo pipefail
@@ -84,6 +89,13 @@ need(slack_ts, "platform_toolsets.slack is empty or missing")
 need("mcp-bakers" in slack_ts, "platform_toolsets.slack lacks mcp-bakers")
 need(slack_ts <= allowed, f"platform_toolsets.slack enables {sorted(slack_ts - allowed)}")
 need(not (slack_ts & disabled), "a Slack toolset is also disabled")
+# The end-to-end test talks to the bot through Hermes' CLI (entrypoint.sh agent): the same
+# toolsets as in Slack, so the test runs what Slack runs.
+cli_ts = (cfg.get("platform_toolsets") or {}).get("cli")
+need(cli_ts == (cfg.get("platform_toolsets") or {}).get("slack"), "platform_toolsets.cli is not exactly platform_toolsets.slack")
+model = cfg.get("model") or {}
+need(model.get("provider") == "anthropic", "model.provider is not anthropic")
+need(model.get("base_url") == "${PM_BOT_MODEL_BASE_URL}", "model.base_url is not ${PM_BOT_MODEL_BASE_URL}")
 
 need(cfg.get("memory", {}).get("write_approval") is True, "memory.write_approval is not true")
 need(cfg.get("skills", {}).get("write_approval") is True, "skills.write_approval is not true")
@@ -168,8 +180,9 @@ sys.exit(1 if errors else 0)
 PY
 pass "config, poller, plugin, persona and fake site name only tools the server serves"
 
-# No relay, no JSON:API and no token exchange: bakers tools are the only way in.
-if [ -e "$BOT/relay" ] || git grep --untracked -nIE 'pm-relay|/jsonapi|/oauth/token|client_credentials|BAKERS_CLIENT_(ID|SECRET)|create_ticket|answer_question' -- "$BOT" ":!tests/contract"; then
+# No relay, no JSON:API and no token exchange: bakers tools are the only way in. The end-to-end
+# test's seed is the site's, not the bot's.
+if [ -e "$BOT/relay" ] || git grep --untracked -nIE 'pm-relay|/jsonapi|/oauth/token|client_credentials|BAKERS_CLIENT_(ID|SECRET)|create_ticket|answer_question' -- "$BOT" ":!tests/contract" ":!tests/e2e"; then
   fail " still has the relay, a JSON:API call, a token exchange or a relay tool"
 fi
 pass "no relay, JSON:API call or token exchange"
@@ -252,6 +265,38 @@ if git grep --untracked -nIE 'bb_question|bakers_question_|client_id: *hermes|br
   fail "pm-bot names a question tool, the hermes OAuth client, the expert hand-in or the chat_thread field"
 fi
 pass "no question entity, OAuth client, expert hand-in or chat_thread field"
+
+# The model endpoint defaults to Anthropic's own; only the end-to-end test points it elsewhere.
+grep -qF 'export PM_BOT_MODEL_BASE_URL="${PM_BOT_MODEL_BASE_URL:-https://api.anthropic.com}"' "$BOT/entrypoint.sh" \
+  || fail "entrypoint.sh does not default PM_BOT_MODEL_BASE_URL to https://api.anthropic.com"
+grep -qE '^PM_BOT_MODEL_BASE_URL=' "$BOT/.env.example" || fail ".env.example does not document PM_BOT_MODEL_BASE_URL"
+pass "the model endpoint is Anthropic's unless PM_BOT_MODEL_BASE_URL says otherwise"
+
+# Mode agent runs the poller without the gateway: the end-to-end test talks to the bot through
+# hermes chat. Mode run is unchanged: poller and gateway.
+python3 - "$BOT/entrypoint.sh" <<'PY' || fail "entrypoint.sh's modes are wrong (see above)"
+import re, sys
+text = open(sys.argv[1]).read()
+errors = []
+usage = re.search(r'usage: entrypoint\.sh \[([a-z|]+)\]', text)
+if not usage or set(usage.group(1).split("|")) != {"run", "check", "agent"}:
+    errors.append("the usage line does not name exactly run, check and agent")
+gateway = [m.start() for m in re.finditer(r'^hermes gateway run', text, re.M)]
+if len(gateway) != 1:
+    errors.append(f"hermes gateway run appears {len(gateway)} times, not once")
+blocks = list(re.finditer(r'^if \[ "\$mode" = agent \]; then\n(.*?)^fi$', text, re.M | re.S))
+start = [b for b in blocks if 'exec node "$BOT/poller/poller.mjs"' in b.group(1)]
+if not start:
+    errors.append("mode agent does not exec the poller in the foreground")
+if any("gateway" in b.group(1) for b in blocks):
+    errors.append("mode agent starts the gateway")
+if start and gateway and start[0].start() > gateway[0]:
+    errors.append("mode agent's start comes after the gateway start")
+for e in errors:
+    print("FAIL:", e, file=sys.stderr)
+sys.exit(1 if errors else 0)
+PY
+pass "mode agent runs the poller without the gateway; mode run keeps both"
 
 # Every user in the allowed channels by default; SLACK_ALLOWED_USERS restricts.
 grep -qF '[ -n "${SLACK_ALLOWED_USERS:-}" ] || export GATEWAY_ALLOW_ALL_USERS=true' "$BOT/entrypoint.sh" \
@@ -366,6 +411,56 @@ for e in errors:
 sys.exit(1 if errors else 0)
 PY
 pass "compose: two mounts (clone read-only), no Docker socket, no .bakers.env, unless-stopped, capabilities dropped"
+
+# The end-to-end test runs production's container: its overlay changes nothing on pm-bot but the
+# mode, the network and the start order, and its env file has every key the production one has.
+E2E=tests/e2e/compose.yaml
+E2E_ENV=tests/e2e/pm-bot.env
+[ -f "$E2E" ] && [ -f "$E2E_ENV" ] || fail "$E2E or $E2E_ENV is missing"
+python3 - "$E2E" "$E2E_ENV" "$BOT/.env.example" <<'PY' || fail "the end-to-end test does not run production's pm-bot (see above)"
+import re, sys, yaml
+
+overlay, env_file, example = sys.argv[1:]
+errors = []
+svc = ((yaml.safe_load(open(overlay)) or {}).get("services") or {}).get("pm-bot")
+if svc is None:
+    errors.append(f"{overlay} has no pm-bot service")
+else:
+    extra = sorted(set(svc) - {"command", "networks", "depends_on"})
+    if extra:
+        errors.append(f"{overlay} sets {extra} on pm-bot; only command, networks and depends_on may differ")
+    if svc.get("command") != ["agent"]:
+        errors.append(f"{overlay} runs pm-bot with {svc.get('command')}, not [agent]")
+keys = lambda path: {m.group(1) for m in re.finditer(r"^([A-Z][A-Z0-9_]*)=", open(path).read(), re.M)}
+missing = sorted(keys(example) - keys(env_file))
+if missing:
+    errors.append(f"{env_file} lacks {missing} of .env.example")
+for e in errors:
+    print("FAIL:", e, file=sys.stderr)
+sys.exit(1 if errors else 0)
+PY
+pass "the end-to-end test runs production's pm-bot: only mode, network and start order differ, every env key set"
+
+# CI runs the end-to-end test on the image it built and is about to publish, before Publish.
+python3 - .github/workflows/checks.yml <<'PY' || fail "CI does not run the end-to-end test on its image before publishing (see above)"
+import sys, yaml
+
+steps = (yaml.safe_load(open(sys.argv[1]))["jobs"]["image"].get("steps") or [])
+names = [s.get("name") for s in steps]
+runs = [str(s.get("run", "")) for s in steps]
+errors = []
+e2e = [i for i, r in enumerate(runs) if 'bash tests/e2e/run.sh "$IMAGE:$GITHUB_SHA"' in r]
+if len(e2e) != 1:
+    errors.append("the image job has no single step running bash tests/e2e/run.sh \"$IMAGE:$GITHUB_SHA\"")
+elif "Publish" not in names or e2e[0] > names.index("Publish"):
+    errors.append("the end-to-end test does not run before Publish")
+elif steps[e2e[0]].get("if"):
+    errors.append("the end-to-end test step is conditional")
+for e in errors:
+    print("FAIL:", e, file=sys.stderr)
+sys.exit(1 if errors else 0)
+PY
+pass "CI runs the end-to-end test on the image it built, before Publish"
 
 echo "OK: pm-bot lock-down and configurability contract holds"
 

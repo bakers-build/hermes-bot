@@ -11,6 +11,9 @@ _config_version: 51
 model:
   provider: anthropic
   default: ${PM_BOT_MODEL}
+  # https://api.anthropic.com (entrypoint.sh's default); the end-to-end test's scripted model
+  # sets another (tests/e2e).
+  base_url: ${PM_BOT_MODEL_BASE_URL}
 
 # Slack over Socket Mode; the bot and app tokens are read from $HERMES_HOME/.env.
 # Users: every user in the allowed channels by default (entrypoint.sh exports
@@ -38,6 +41,14 @@ plugins:
 
 platform_toolsets:
   slack:
+    - skills
+    - memory
+    - session_search
+    - mcp-clone-reader
+    - mcp-bakers
+  # Hermes' CLI, through which the end-to-end test talks to the bot (entrypoint.sh agent):
+  # the same toolsets as in Slack.
+  cli:
     - skills
     - memory
     - session_search

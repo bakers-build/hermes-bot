@@ -1,0 +1,7 @@
+{
+  "about": "A run that asks the requester a question: a comment, the Question label and the freeze, as an agent asks through the ticket.",
+  "steps": [
+    { "tool": "bakers_comment_create", "args": { "ticket": "{{ticket}}", "type": "comment", "body": "# Question\n\nShould members also sign in with a username, or only with their e-mail address?" } },
+    { "tool": "bakers_ticket_update", "args": { "ticket": "{{ticket}}", "labels_add": ["Question"], "frozen": true } }
+  ]
+}

@@ -64,6 +64,7 @@ node --test '**/*.test.mjs'     # poller, client and render, against stubs
 python3 -m unittest discover -s plugins/bot-channels   # the plugin's pure core
 bash tests/contract/pm-bot.sh          # lock-down of the configuration, the persona, the plugin, the build lines, the Slack app and the compose file
 bash tests/contract/pm-bot-image.sh    # builds the image; check mode (plugin loaded, its Hermes seams, /mcp stub), the plugin's recovery test on Hermes, then run mode (Docker)
+bash tests/e2e/run.sh                  # the end-to-end test (below; Docker)
 ```
 
 Build the image from the repository root. Its skills come from three named build contexts: the bakers-build repository's skill bundle (branch `next`) and two upstream skill repositories pinned by commit (superpowers `v7.0.0`, mattpocock/skills `v1.3.2`), so building needs GitHub access:
@@ -76,6 +77,20 @@ docker build -t pm-bot:local \
 ```
 
 GitHub CI runs the first two in `pm_bot` and the third in `image_gate`; the release then publishes the image to GHCR (the template's README › PM bot › The bot's version).
+
+## End-to-end test
+
+`bash tests/e2e/run.sh [IMAGE]` runs the bot's image against a real bakers.build site and conductor, with no Slack and no credentials, and exits non-zero naming each failed scenario. CI runs it in the `image` job on the image it is about to publish. It needs Docker and this clone; without `IMAGE` it builds the working copy (GitHub access, as above). On an arm machine the site's release images run emulated, which takes several times longer.
+
+| Service | What it is |
+|---|---|
+| `pm-bot` | The image under test with production's service from `compose.yaml`: only its command (`agent`), start order and network differ, and its env file has every key of `.env.example` (`tests/contract/pm-bot.sh` checks both). Mode `agent` runs the poller and no gateway; the test talks to the bot through `hermes chat` in the container, with the trusted line and sender prefix the gateway would add |
+| `nginx`, `php`, `db`, `deploy` | bakers.build from its public release images (`BAKERS_VERSION`, default `0.11.0`), seeded by `tests/e2e/seed.php`: a project, the bot's service account and key, a conductor owner and key, a requester and a conductor that takes working runs |
+| `conductor` | The bakers.build CLI with a stub `claude` (`tests/e2e/conductor/`) that plays the script a scenario leaves for its ticket (`tests/e2e/agent/`): ask a question, hit a technical problem |
+| `model` | A scripted Anthropic Messages endpoint (`model.base_url` from `PM_BOT_MODEL_BASE_URL`): each scenario scripts the bot's tool calls, and a call it did not script fails the scenario |
+| `slack-recorder` | The Slack Web API methods the poller calls (`SLACK_API_URL`), answered and recorded |
+
+The scenarios (`tests/e2e/scenarios/`) assert what the site and the recorder hold, never wording. `--only <file>` runs one file, `--keep` leaves the stack running, `--real` uses a real model for the bot and Claude Code for the conductor (`ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`; a failure may then be the model's). A failed run leaves the stack's logs, the model's turns, the Slack calls and the poller's state in `tests/e2e/out/logs/`.
 
 ## Test it by hand
 
@@ -93,6 +108,10 @@ On a workspace running the bot, with the service user's profile set and the Slac
 10. **One language.** With an empty `background`, a request written in English gets a German reply in the main channel and German answers. Set `background` to *Antworte auf Englisch.*, run `docker compose -p pm-bot restart`, and write in German: the reply and the answers are English. With *Réponds en français.* the answers are French and the plugin's reply German. The container log shows `bot-channels: answering in <code>` after each start.
 
 Also check the limits: after a restart of the bakers.build site a new request is answered without restarting the bot. A request channel without a ticket is archived after a week of silence; that takes a week, so the poller's tests cover it against stubs.
+
+**What the end-to-end test covers.** It covers the bakers.build side of steps 2, 5, 6, 7 and 8 and both restart limits: the handed-over ticket and the rename (2), the answer written, the label removed and the ticket unfrozen (5), nothing written after a technical problem (6), the status read and the one post on `review` (7), the archive, the `-2` channel with the requester and the second link (8), no second post after a restart of the bot, and a ticket after a restart of the site. It also checks that a run that only asked a question is never reported as a problem. Steps 1, 3, 4, 9 and 10, the week-long archiving and the Slack side of 2, 5 and 6 (the channel per request, the relayed question and technical-problem texts, the *Slack user* in the answer) stay manual here; the plugin's and the poller's unit tests cover steps 1 and 9, the attribution and the relayed texts against stubs.
+
+**On the local stack.** `ANTHROPIC_API_KEY=… bash tests/e2e/run.sh up` starts the same stack with a real model for the bot and prints the site's address and a login link for the conductor owner and the requester. Then `run.sh chat` talks to the bot as the requester (write the trusted line and the prefix as `run.sh chat` shows), `run.sh slack` follows what the poller posts, renames and archives, `run.sh agent <ticket> question` (or `technical-problem`) makes the stub's next run on that ticket ask, and `run.sh down` removes the stack. Steps 2, 5, 6, 7 and 8 work there, their Slack side read from `run.sh slack`; `up --real` gives the conductor Claude Code instead of the stub. Steps 1, 3, 4, 9 and 10 and the Slack side of 2, 5 and 6 need a real workspace.
 
 ## Approve what it learns
 

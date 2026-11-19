@@ -1,4 +1,5 @@
-// The poller wired to the site and Slack stubs, with a recording `hermes send`.
+// The poller wired to the site and Slack stubs, with a recording `hermes send` and a recording
+// translator: by default it answers each text unchanged, as if the model kept it.
 
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -10,7 +11,7 @@ import { slackStub } from './stubs.mjs';
 
 const messages = JSON.parse(readFileSync(new URL('../poller/messages.json', import.meta.url), 'utf8'));
 
-export async function setup(t, { slackAnswers, previewZones, ...siteOptions } = {}) {
+export async function setup(t, { slackAnswers, previewZones, translate = async (text) => text, ...siteOptions } = {}) {
   const s = await site(siteOptions);
   const slack = await slackStub(slackAnswers);
   t.after(s.close);
@@ -22,6 +23,8 @@ export async function setup(t, { slackAnswers, previewZones, ...siteOptions } = 
   const botChannelsFile = join(home, 'bot-channels.json');
   const languageFile = join(home, 'bot-language.json');
   const errors = [];
+  // Every translate call, as [text, language].
+  const translations = [];
   // The clock the poller reads; tests move it.
   const clock = { now: Date.parse('2026-11-05T12:00:00Z') };
   // A fresh poller on the same state file, as after a restart.
@@ -40,6 +43,10 @@ export async function setup(t, { slackAnswers, previewZones, ...siteOptions } = 
     project: PROJECT,
     messages,
     previewZones,
+    translate: (text, code) => {
+      translations.push([text, code]);
+      return translate(text, code);
+    },
     log: { log: () => {}, error: (line) => errors.push(line) },
   });
   const poller = start();
@@ -48,6 +55,6 @@ export async function setup(t, { slackAnswers, previewZones, ...siteOptions } = 
   const botChannels = (channels) => writeFileSync(botChannelsFile, JSON.stringify(channels));
   // The bot's language as the plugin writes bot-language.json; `{ raw }` writes the text as it is.
   const language = (code) => writeFileSync(languageFile, code.raw ?? JSON.stringify({ language: code }));
-  return { s, slack, sent, poller, state, clock, botChannels, language, errors, restart: start, failSend: (value) => (sendFails = value) };
+  return { s, slack, sent, poller, state, clock, botChannels, language, errors, translations, restart: start, failSend: (value) => (sendFails = value) };
 }
 

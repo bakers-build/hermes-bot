@@ -28,6 +28,13 @@ slack:
   thread_require_mention: false
   reply_in_thread: false
 
+# The text the model writes beside its tool calls is a working note, not an answer: it stays out
+# of Slack, so the requester reads results and questions, in the bot's language.
+display:
+  platforms:
+    slack:
+      interim_assistant_messages: false
+
 # One shared session per channel: everyone in a request channel sees the same conversation.
 group_sessions_per_user: false
 

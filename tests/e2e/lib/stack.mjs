@@ -172,7 +172,10 @@ export async function chat(text, { session, channel: ch, ticket = 'none yet', se
   const query = `${session ? '' : trusted}[${sender} | Slack user <@${user}>] ${text}`;
   const args = ['exec', '-T', '-u', 'hermes', '-w', '/opt/data', 'pm-bot', 'hermes', 'chat', '-Q', '--format', 'stream-json', '--query-file', '-'];
   if (session) args.push('--resume', session);
-  const { stdout } = await compose(args, { input: query });
+  // `hermes chat` starts Hermes' gateway when none runs; on a loaded machine (a restarted bot,
+  // emulated images) that start can miss its deadline once. The turn has not run then.
+  const run = () => compose(args, { input: query });
+  const { stdout } = await run().catch((error) => (/Gateway starting: deadline/.test(error.message) ? run() : Promise.reject(error)));
   const events = stdout
     .split('\n')
     .filter((line) => line.startsWith('{'))

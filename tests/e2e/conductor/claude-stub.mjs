@@ -4,7 +4,7 @@
 // test left for the run's ticket, /e2e/agent/<identifier>.json (tests/e2e/agent/*.json), once:
 //   {"steps": [{"tool": "bakers_ticket_update", "args": {...}}, {"sleep": 2000}, ...]}
 // Each tool is called on the run's own tool server (BAKERS_CONDUCTOR_URL), as the conductor's owner;
-// `{{ticket}}` in an argument is the run's ticket. Without a script it exits at once, and the run
+// `{{ticket}}` in an argument is the run's ticket. Without a script it waits for one, and the run
 // stays running until its ticket moves on, is frozen or is cancelled. No dependencies.
 
 import { existsSync, readFileSync, renameSync } from 'node:fs';
@@ -41,10 +41,10 @@ async function tool(name, args) {
 const fillIn = (value) => JSON.parse(JSON.stringify(value).replaceAll('{{ticket}}', identifier));
 
 const file = `/e2e/agent/${identifier}.json`;
-if (!existsSync(file)) {
-  log('no script; nothing to do');
-  process.exit(0);
-}
+// Without a script the run works on until one arrives (`run.sh agent <ticket> <script>`), or until
+// the conductor stops it with its ticket.
+if (!existsSync(file)) log('waits for a script');
+while (!existsSync(file)) await new Promise((resolve) => setTimeout(resolve, 2000));
 // Played once: the run a later unfreeze starts finds no script.
 renameSync(file, `${file}.played`);
 const { steps = [] } = JSON.parse(readFileSync(`${file}.played`, 'utf8'));

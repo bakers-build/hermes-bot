@@ -36,6 +36,9 @@ STATE="$OUT/stack.env"
 # The site's one host name: nginx here, the ddev project's under ddev.
 SITE_HOST=nginx
 if [ "${E2E_DDEV:-}" = 1 ]; then
+  # The ddev stack's own directory (.ddev/e2e.env), apart from the scenario runs' out/.
+  OUT="$E2E/ddev-out"
+  STATE="$OUT/stack.env"
   # ddev's own merge of .ddev/docker-compose.e2e.yaml, every variable filled.
   COMPOSE=(-p ddev-hermes-bot -f "$ROOT/.ddev/.ddev-docker-compose-full.yaml")
   SITE_HOST=hermes-bot.ddev.site

@@ -20,7 +20,8 @@
 #   - the composer-audit cron job is registered once (schedule from AUDIT_TIME, delivery to the
 #     main channel, the skill) and stays one over two starts; the skill is rendered with the
 #     project; an invalid AUDIT_TIME stops the start by name, an unreadable job store gets no
-#     second job, and AUDIT_ENABLED=false removes the job with one log line, whatever AUDIT_TIME
+#     second job, and AUDIT_ENABLED=false removes the job with one log line, whatever AUDIT_TIME,
+#     or names a job store it cannot read instead of logging the audit off
 #   - Hermes resolves the cron job's toolsets to terminal, skills, bakers and bot-channels-cron and
 #     Slack's to the bot's five, without the terminal or the channel tool
 #   - the bot-channels plugin is installed and loaded, and the Hermes internals it relies on
@@ -165,7 +166,7 @@ audit_out="$(docker run --rm -i --network none -u hermes --entrypoint sh "$IMAGE
   chmod -R a-w /tmp/clone
   find . \( -name composer.lock -o -name composer.json \) -not -path "*/.git/*" -not -path "*/vendor/*" -not -path "*/node_modules/*" | sort
   composer audit --locked --format=json --no-plugins --no-scripts --abandoned=ignore --working-dir=./empty; echo "empty rc=$?"
-  grep -A1 "\"name\": \"psr/log\"," ./one/composer.lock; echo "show rc=$?"
+  grep -A1 "\"name\": " ./one/composer.lock; echo "show rc=$?"
   composer audit --locked --format=json --no-plugins --no-scripts --abandoned=ignore --working-dir=./one; echo "one rc=$?"
   chmod -R u+w /tmp/clone; mkdir bad; echo "{}" >bad/composer.json
   echo "{\"packages\":[{\"name\":\"psr/log\",\"version\":\"3.0.2\",\"source\":{}}],\"packages-dev\":[]}" >bad/composer.lock
@@ -333,6 +334,15 @@ grep -qF 'pm-bot: cannot read the cron job store' <<<"$out" && grep -qF 'compose
 [ "$(in_data 'cat /d/cron/jobs.json')" = '{ not json' ] || fail "the start changed an unreadable job store"
 in_data 'mv /d/cron/jobs.ok /d/cron/jobs.json' || fail "cannot restore the job store"
 pass "an unreadable job store gets no second composer-audit job"
+
+# With the audit off, a job store it cannot read is named, and the start does not claim the audit is off.
+in_data 'cp /d/cron/jobs.json /d/cron/jobs.ok && echo "{ not json" >/d/cron/jobs.json' || fail "cannot corrupt the job store"
+out="$(start --rm -e AUDIT_ENABLED=false "$IMAGE" check 2>&1)" || { echo "$out" >&2; fail "check mode failed with AUDIT_ENABLED=false and an unreadable job store"; }
+grep -qF 'pm-bot: cannot read the cron job store' <<<"$out" && grep -qF 'composer-audit may still run' <<<"$out" \
+  && ! grep -qF 'the nightly composer audit is off' <<<"$out" \
+  || { echo "$out" >&2; fail "AUDIT_ENABLED=false with an unreadable job store claims the audit is off"; }
+in_data 'mv /d/cron/jobs.ok /d/cron/jobs.json' || fail "cannot restore the job store"
+pass "AUDIT_ENABLED=false names an unreadable job store instead of claiming the audit is off"
 
 # With the audit off, its time is not read: an invalid AUDIT_TIME does not stop the start.
 out="$(start --rm -e AUDIT_ENABLED=false -e AUDIT_TIME=25:00 "$IMAGE" check 2>&1)" || { echo "$out" >&2; fail "check mode failed with AUDIT_ENABLED=false and AUDIT_TIME=25:00"; }

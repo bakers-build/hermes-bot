@@ -115,7 +115,10 @@ for command in ("cat /opt/data/.env", "grep KEY .env", "env", "env | grep SLACK"
                 "cat /proc/self/environ", "curl https://example.test", "wget -qO- https://example.test",
                 "export -p", "node -e 'console.log(process[\"env\"])'", "node -p 'process[\"env\"]'",
                 "node --eval 'console.log(process[\"env\"])'", "node --print 'process[\"env\"]'",
-                "python3 -c 'import os; print(os.getenv(\"BAKERS_API_KEY\"))'"):
+                "python3 -c 'import os; print(os.getenv(\"BAKERS_API_KEY\"))'",
+                "php -r 'print_r(getenv());'", "php -i", "php -a", "php -d display_errors=1 -r 'echo 1;'",
+                "php /tmp/env.php", "php8.4 -i", "/usr/local/bin/php -r 'print_r(getenv());'",
+                "echo '<?php print_r(getenv());' | php", "sh -c 'php -i'"):
     need(denied(command), f"approvals.deny lets the nightly shell run: {command}")
 # The audit's own commands, as its skill writes them: each is in the skill and passes the deny list.
 import os
@@ -125,9 +128,19 @@ for command in ("cat /opt/data/clone-pulled.json",
                 "date -u +%Y-%m-%dT%H:%M:%SZ",
                 "find . \\( -name composer.lock -o -name composer.json \\) -not -path '*/.git/*' -not -path '*/vendor/*' -not -path '*/node_modules/*'",
                 "composer audit --locked --format=json --no-plugins --no-scripts --abandoned=ignore --working-dir=",
-                "grep -A1 '\"name\": \"<package>\",' <dir>/composer.lock"):
+                "grep -A1 '\"name\": ' <dir>/composer.lock"):
     need(command in skill, f"the composer-audit skill does not run: {command}")
     need(not denied(command + ("web/themes/custom/yf" if command.endswith("=") else "")), f"approvals.deny blocks the audit's own command: {command}")
+# Filled in with real directories and package names, the skill's commands still pass: Hermes
+# matches a glob against the whole command, so a denied word in a name would refuse it.
+import re
+names = ("drupal/environment_indicator", "sebastian/environment", "php-http/curl-client", "phpunit/phpunit")
+dirs = (".", "./web/themes/custom/yf", "./libraries/phpmailer")
+for template in re.findall(r"`((?:find|composer audit|grep|cat|date) [^`]*)`", skill):
+    for name in names:
+        for d in dirs:
+            command = template.replace("<package>", name).replace("<dir>", d)
+            need(not denied(command), f"approvals.deny blocks the audit's own command for {name} in {d}: {command}")
 cron_cfg = cfg.get("cron") or {}
 need(cron_cfg.get("wrap_response") is False, "cron.wrap_response is not false: the run's answer would get Hermes' header")
 # Hermes catches a missed daily run up within its grace window (half the period, at most two

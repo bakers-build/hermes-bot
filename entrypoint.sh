@@ -86,8 +86,16 @@ read -r -a audit_jobs <<<"$(sed -n 1p <<<"$audit_store")"
 audit_scheduled="$(sed -n 2p <<<"$audit_store")"
 case "${AUDIT_ENABLED:-true}" in
   false|0|no|off)
-    for job in "${audit_jobs[@]}"; do hermes cron remove "$job" >/dev/null || echo "pm-bot: cannot remove cron job $job" >&2; done
-    echo "pm-bot: the nightly composer audit is off (AUDIT_ENABLED=${AUDIT_ENABLED})" ;;
+    # Off is logged only when no job is left; a store it cannot read or a job it cannot remove is named.
+    audit_off="$audit_store_ok"
+    for job in "${audit_jobs[@]}"; do
+      hermes cron remove "$job" >/dev/null || { echo "pm-bot: cannot remove cron job $job" >&2; audit_off=false; }
+    done
+    if [ "$audit_off" = true ]; then
+      echo "pm-bot: the nightly composer audit is off (AUDIT_ENABLED=${AUDIT_ENABLED})"
+    else
+      echo "pm-bot: AUDIT_ENABLED=${AUDIT_ENABLED}, but composer-audit may still run: fix or remove $DATA/cron/jobs.json and restart" >&2
+    fi ;;
   *)
     # The nightly audit's time, HH:MM in the container's time zone (TZ); read only when it runs.
     AUDIT_TIME="${AUDIT_TIME:-03:30}"

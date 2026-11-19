@@ -60,7 +60,7 @@ known_plugin_toolsets:
 # The cron job's shell. It starts in the read-only clone and needs only its skill's commands
 # (cat, date, find, grep, composer audit), none of which takes a variable. The deny globs keep the run's own commands away
 # from the env, the env file and the web; they slow a misled run down and are no sandbox
-# (README.md › Security). An unattended run has nobody to approve a dangerous command,
+# (README.md › The nightly Composer audit › The shell). An unattended run has nobody to approve a dangerous command,
 # so it is refused at once.
 terminal:
   cwd: ${PM_BOT_CLONE_DIR}
@@ -84,6 +84,10 @@ approvals:
     - "*node --e*"
     - "*node --p*"
     - "*python*"
+    # php itself, however it is called (php -r, -i, -a, a file); a directory named php-… stays readable.
+    - "php*"
+    - '*[ ;|&(`''"/]php'
+    - '*[ ;|&(`''"/]php[ .0-9]*'
 
 # The cron job's answer goes into the main channel as written: one line, or nothing on
 # [SILENT]. A night the container was down catches up when it starts within two hours (Hermes'

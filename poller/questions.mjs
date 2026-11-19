@@ -35,11 +35,10 @@ export function openNote(ticket, comments) {
  *   the open notes of tickets with a conversation
  * @param {boolean} complete every frozen ticket was read; only then are closed notes forgotten
  * @param {{question: string, technical_problem: string}} leads the lead-in per kind; `{identifier}` and `{title}` become the ticket's identifier and title, escaped
- * @param {(text: string) => string} [localize] the note's body as it is posted, before it is escaped; unchanged by default
  * @returns {{posts: Array<{comment: string, kind: string, identifier: string, channel: string, thread_ts?: string, text: string}>, relayed: string[]}}
  *   add each posted note to `relayed` after its post succeeded
  */
-export function relay(relayed, open, complete, leads, localize = (text) => text) {
+export function relay(relayed, open, complete, leads) {
   const before = new Set(relayed);
   const posts = open
     .filter(({ note }) => !before.has(note.comment.id))
@@ -48,7 +47,7 @@ export function relay(relayed, open, complete, leads, localize = (text) => text)
       kind: note.kind,
       identifier: ticket.identifier,
       ...target(ticket.conversation),
-      text: named(ticket, `${leads[note.kind].replace('{identifier}', () => escape(ticket.identifier)).replace('{title}', () => escape(ticket.title))}\n\n${escape(localize(note.comment.body))}`),
+      text: named(ticket, `${leads[note.kind].replace('{identifier}', () => escape(ticket.identifier)).replace('{title}', () => escape(ticket.title))}\n\n${escape(note.comment.body)}`),
     }));
   if (!complete) return { posts, relayed: [...relayed] };
   const still = new Set(open.map(({ note }) => note.comment.id));

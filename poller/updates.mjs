@@ -20,8 +20,8 @@ const INTERNAL = [
 ];
 
 /**
- * The plain sentences among the first two of a summary's Outcome section, as written, without
- * Markdown; empty when it has none. Escaped for Slack where they are posted.
+ * The plain sentences among the first two of a summary's Outcome section, escaped for Slack;
+ * empty when it has none.
  */
 export function outcome(markdown) {
   const lines = (markdown ?? '').split('\n');
@@ -33,7 +33,7 @@ export function outcome(markdown) {
     .split(/(?<=[.!?])\s+/)
     .slice(0, 2)
     .filter((s) => s && !INTERNAL.some((r) => r.test(s)))
-    .map((s) => s.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/\*\*|__|(?<!\w)[*_]|[*_](?!\w)/g, '').trim());
+    .map((s) => escape(s.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/\*\*|__|(?<!\w)[*_]|[*_](?!\w)/g, '').trim()));
 }
 
 // A link of kind `design` or `ddev`. The tools return links without their stored kind, so it is
@@ -61,9 +61,8 @@ const onZone = (url, zones) => {
 
 /**
  * The links of a summary's Manual review section on a host under one of `zones`, each URL once:
- * Markdown links with their text as written (dropped when it holds internal words), `<url>` and
- * bare URLs without. Code is skipped. Agent text is untrusted, so no other URL ever leaves this
- * function.
+ * Markdown links with their text (dropped when it holds internal words), `<url>` and bare URLs
+ * without. Code is skipped. Agent text is untrusted, so no other URL ever leaves this function.
  */
 export function previewLinks(markdown, zones) {
   if (!zones.length) return [];
@@ -80,7 +79,7 @@ export function previewLinks(markdown, zones) {
       const url = m[2] ?? m[3] ?? m[4].replace(/[.,;:!?)]+$/, '');
       if (found.has(url) || !onZone(url, zones)) continue;
       const label = (m[1] ?? '').replace(/\*\*|__|(?<!\w)[*_]|[*_](?!\w)/g, '').trim();
-      found.set(url, INTERNAL.some((r) => r.test(label)) ? '' : label);
+      found.set(url, INTERNAL.some((r) => r.test(label)) ? '' : escape(label));
     }
   }
   return [...found].map(([url, text]) => ({ url, text }));
@@ -106,17 +105,16 @@ const recordOf = (t, zones) => ({
  *   conversation: {channel: string, thread_ts?: string}, inherited?: boolean, links: Array<{uri: string, title: string}>,
  *   runs: Array<{uuid: string, state: string, state_at_start: string, started_at: number | null}>,
  *   comments: Array<{id: string, type: string, created: string, body: string}>}>,
- *   now: number, interval: number, messages: any, zones?: string[], localize?: (text: string) => string}} input
+ *   now: number, interval: number, messages: any, zones?: string[]}} input
  *   previous: identifier → what was seen of the ticket, with `previews`: summary ID → its posted preview URLs,
  *     and `pending`: run UUID → its state before it ended without done, for the paused line the next pass decides;
  *   posted: conversation → the poller's last post there, in ms;
  *   tickets: the followed open tickets that were read in this pass;
- *   zones: the PREVIEW_ZONES; none posts no summary link and adds no note to a ddev link;
- *   localize: agent text as it is posted, before it is escaped; unchanged by default
+ *   zones: the PREVIEW_ZONES; none posts no summary link and adds no note to a ddev link
  * @returns {{posts: Array<{identifier: string, channel: string, thread_ts?: string, text: string}>,
  *   next: {records: Record<string, any>, posted: Record<string, number>}}}
  */
-export function updates({ previous, posted, tickets, now, interval, messages, zones = [], localize = (text) => text }) {
+export function updates({ previous, posted, tickets, now, interval, messages, zones = [] }) {
   const records = {};
   const nextPosted = { ...posted };
   const posts = [];
@@ -157,20 +155,20 @@ export function updates({ previous, posted, tickets, now, interval, messages, zo
       if (!before.summaries.includes(c.id)) {
         record.summaries.push(c.id);
         const sentences = outcome(c.body);
-        if (sentences.length) post(escape(localize(sentences.join(' '))), { summary: c.id });
+        if (sentences.length) post(sentences.join(' '), { summary: c.id });
         if (zones.length) record.previews[c.id] ??= [];
       }
       // A keyed summary's preview links not posted yet, right after its Outcome sentences.
       if (!zones.length || !record.previews[c.id]) continue;
       for (const l of previewLinks(c.body, zones).filter((l) => !record.previews[c.id].includes(l.url))) {
         record.previews[c.id].push(l.url);
-        post(`${messages.previewLead} ${l.text && escape(localize(l.text))}`.trim() + `\n${escape(l.url)}`, { preview: [c.id, l.url] });
+        post(`${messages.previewLead} ${l.text}`.trim() + `\n${escape(l.url)}`, { preview: [c.id, l.url] });
       }
     }
     for (const l of t.links.filter((l) => !before.links.includes(l.uri))) {
       record.links.push(l.uri);
+      const title = INTERNAL.some((r) => r.test(l.title ?? '')) ? '' : escape(l.title ?? '');
       if (!preview(l.uri)) continue;
-      const title = INTERNAL.some((r) => r.test(l.title ?? '')) || !l.title ? '' : escape(localize(l.title));
       // A ddev site opens only on the box: left out beside a preview link of this pass, else marked so.
       const box = zones.length && boxOnly(l.uri);
       if (box && posts.some((p) => p.identifier === t.identifier && p.preview)) continue;
@@ -198,7 +196,7 @@ export function updates({ previous, posted, tickets, now, interval, messages, zo
     const since = (running.started_at ?? 0) * 1000;
     const newest = t.comments.filter((c) => c.type === 'summary' && Date.parse(c.created) >= since).sort((a, b) => Date.parse(b.created) - Date.parse(a.created))[0];
     const [sentence] = newest ? outcome(newest.body) : [];
-    posts.push({ identifier: t.identifier, ...target(t.conversation), text: named(t, sentence ? `${messages.stillWorking} ${escape(localize(sentence))}` : messages.stillWorking), heartbeat: true });
+    posts.push({ identifier: t.identifier, ...target(t.conversation), text: named(t, sentence ? `${messages.stillWorking} ${sentence}` : messages.stillWorking), heartbeat: true });
   }
   return { posts, next: { records, posted: nextPosted } };
 }

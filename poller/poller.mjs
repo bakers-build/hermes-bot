@@ -8,10 +8,7 @@
 // PREVIEW_ZONES, a new preview link, and a heartbeat while a run works and the conversation has been quiet for PM_BOT_HEARTBEAT_INTERVAL. For the channels the bot created it renames a request channel after its
 // ticket, archives it after the final post, opens a fresh one when the ticket is reopened, and
 // closes a request channel that stayed silent for a week without a ticket. It posts in the bot's
-// language, which the bot-channels plugin writes to bot-language.json. The agent text it relays
-// (a summary's Outcome, a question, a technical problem, the Manual review, link labels) is
-// English; for any other language each such text goes through one tool-free Hermes call
-// (translate.mjs), and the original is posted when that call fails. No dependencies.
+// language, which the bot-channels plugin writes to bot-language.json. No LLM, no dependencies.
 //
 //   node poller/poller.mjs          # loop
 //   node poller/poller.mjs --once   # one pass, then exit
@@ -29,7 +26,6 @@ import { diff, reachedDone } from './diff.mjs';
 import { heartbeatInterval, pollInterval } from './interval.mjs';
 import { openNote, QUESTION_LABEL, relay, TECHNICAL_PROBLEM_LABEL } from './questions.mjs';
 import { conversation, conversations } from './tickets.mjs';
-import { hermesTranslate, translateAll } from './translate.mjs';
 import { withTicket } from './ticket-footer.mjs';
 import { forget, previewZones, updates } from './updates.mjs';
 
@@ -86,20 +82,17 @@ export function hermesSend({ channel, thread_ts, text }) {
 /**
  * @param {{client: ReturnType<typeof createBakersClient>, slack: ReturnType<typeof createSlack>,
  *   send: (message: {comment: string, kind: 'question' | 'technical_problem', identifier: string, channel: string, thread_ts?: string, text: string}) => Promise<void>,
- *   translate: (text: string, code: string) => Promise<string>,
  *   stateFile: string, botChannelsFile: string, languageFile: string, workspaceUrl: string, now?: () => number,
  *   project: string, messages: {de: any, en: any}, heartbeat?: number, previewZones?: string[], log?: {log: Function, error: Function}}} options
  *   heartbeat: the quiet time in ms after which a working ticket's conversation gets a heartbeat
  *   botChannelsFile: the request channels the bot's plugin opened, which only the plugin writes
  *   languageFile: the bot's language as the plugin read it, {"language": "<ISO 639-1 code>"}; only the plugin writes it
  *   messages: the fixed texts per language
- *   translate: agent text into the language with that ISO 639-1 code; a rejection posts the original
  *   previewZones: the DNS zones whose hosts' links in a summary's Manual review are posted; none posts none
  */
-export function createPoller({ client, slack, send, translate, stateFile, botChannelsFile, languageFile, workspaceUrl, now = Date.now, project, messages: texts, heartbeat = heartbeatInterval(), previewZones: zones = [], log = console }) {
+export function createPoller({ client, slack, send, stateFile, botChannelsFile, languageFile, workspaceUrl, now = Date.now, project, messages: texts, heartbeat = heartbeatInterval(), previewZones: zones = [], log = console }) {
   const stamp = () => new Date().toISOString();
-  // The language of the current pass, and its texts: German without texts for it.
-  let code = 'de';
+  // The texts of the current pass: the plugin's language, German without texts for it.
   let messages = texts.de;
 
   // Every ticket of the project, page by page, through the bakers list tool.
@@ -157,23 +150,13 @@ export function createPoller({ client, slack, send, translate, stateFile, botCha
   // German while the plugin has written no language; an unreadable file is logged.
   async function language() {
     try {
-      const { language: read } = await readJson(languageFile, {});
-      if (read !== undefined && typeof read !== 'string') throw new Error('language is not a string');
-      return read || 'de';
+      const { language: code } = await readJson(languageFile, {});
+      if (code !== undefined && typeof code !== 'string') throw new Error('language is not a string');
+      return Object.hasOwn(texts, code ?? '') ? texts[code] : texts.de;
     } catch (error) {
       log.error(`${stamp()} ${languageFile}: ${error.message}; posting in German`);
-      return 'de';
+      return texts.de;
     }
-  }
-
-  // A pure core's result with its agent text in the pass's language: a first run collects that
-  // text, the second uses the translations, each text as written where there is none.
-  async function localized(compute) {
-    const found = [];
-    compute((text) => (found.push(text), text));
-    if (!found.length) return compute((text) => text);
-    const translated = await translateAll(found, code, translate, (line) => log.error(`${stamp()} ${line}`));
-    return compute((text) => translated.get(text) ?? text);
   }
 
   async function readState() {
@@ -201,7 +184,7 @@ export function createPoller({ client, slack, send, translate, stateFile, botCha
       const [summary] = await comments(current.find((t) => t.identifier === identifier).id, 'summary');
       summaries[identifier] = summary?.body ?? '';
     }
-    const { posts, next } = await localized((localize) => diff(state.tickets, current, summaries, messages, localize));
+    const { posts, next } = diff(state.tickets, current, summaries, messages);
     for (const t of all) if (archived(state, t) && state.tickets?.[t.identifier] !== undefined) next[t.identifier] = state.tickets[t.identifier];
     for (const p of posts) {
       try {
@@ -235,8 +218,7 @@ export function createPoller({ client, slack, send, translate, stateFile, botCha
       }
     }
     const leads = { question: messages.questionLead, technical_problem: messages.technicalProblemLead };
-    // Translated in the pass that finds it: a failed translation posts the original, never later.
-    const selected = await localized((localize) => relay(state.relayed, open, complete, leads, localize));
+    const selected = relay(state.relayed, open, complete, leads);
     state.relayed = selected.relayed;
     for (const post of selected.posts) {
       try {
@@ -268,7 +250,7 @@ export function createPoller({ client, slack, send, translate, stateFile, botCha
         log.error(`${stamp()} updates of ${t.identifier}: ${error.message}`);
       }
     }
-    const { posts, next } = await localized((localize) => updates({ previous: state.updates, posted: state.posted, tickets: read, now: now(), interval: heartbeat, messages, zones, localize }));
+    const { posts, next } = updates({ previous: state.updates, posted: state.posted, tickets: read, now: now(), interval: heartbeat, messages, zones });
     state.updates = { ...kept, ...next.records };
     state.posted = next.posted;
     const refused = new Set();
@@ -375,8 +357,7 @@ export function createPoller({ client, slack, send, translate, stateFile, botCha
   }
 
   async function pass() {
-    code = await language();
-    messages = Object.hasOwn(texts, code) ? texts[code] : texts.de;
+    messages = await language();
     try {
       const state = await readState();
       const current = await tickets();
@@ -410,7 +391,6 @@ if (isMain) {
     client: createBakersClient({ url: env('BAKERS_URL'), apiKey: env('BAKERS_API_KEY') }),
     slack: createSlack({ url: process.env.SLACK_API_URL || undefined, token: env('SLACK_BOT_TOKEN') }),
     send: hermesSend,
-    translate: hermesTranslate({ model: env('PM_BOT_MODEL') }),
     stateFile: join(env('HERMES_HOME'), 'poller-state.json'),
     botChannelsFile: join(env('HERMES_HOME'), 'bot-channels.json'),
     languageFile: join(env('HERMES_HOME'), 'bot-language.json'),

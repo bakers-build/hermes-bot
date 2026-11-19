@@ -10,10 +10,9 @@ import { CLOSED } from './channels.mjs';
  * @param {Array<{identifier: string, title: string, state: string, conversation: {channel: string, thread_ts?: string} | null, inherited?: boolean}>} tickets
  * @param {Record<string, string>} summaries identifier → latest summary comment (Markdown), for tickets that reached done
  * @param {{states: Record<string, string>, testHint: string, noTestHint: string}} messages
- * @param {(text: string) => string} [localize] the Manual review as it is posted; unchanged by default
  * @returns {{posts: Array<{identifier: string, channel: string, thread_ts?: string, text: string}>, next: Record<string, string>}}
  */
-export function diff(previous, tickets, summaries, messages, localize = (text) => text) {
+export function diff(previous, tickets, summaries, messages) {
   const next = {};
   const posts = [];
   for (const t of tickets) {
@@ -26,7 +25,7 @@ export function diff(previous, tickets, summaries, messages, localize = (text) =
     if (!text) continue;
     if (t.state === 'done') {
       const hint = manualReview(summaries[t.identifier] ?? '');
-      text += hint ? `\n\n${messages.testHint}\n\n${localize(hint)}` : `\n\n${messages.noTestHint}`;
+      text += hint ? `\n\n${messages.testHint}\n\n${hint}` : `\n\n${messages.noTestHint}`;
     }
     if (t.state === 'done') text = withTicket(text, t, messages);
     posts.push({ identifier: t.identifier, ...target(t.conversation), text: named(t, text) });

@@ -27,9 +27,7 @@
 #   - no bb_question tool is named anywhere in the bot
 #   - every user in the allowed channels is served unless an allowlist is set
 #   - poller, client and plugin call no LLM, except the plugin's language.py, which only takes
-#     back a validated language code, and the poller's translate.mjs, whose one Hermes call runs
-#     in safe mode with a toolset that holds no tool and whose answer is used only when it keeps
-#     every URL, code span and identifier; the persona answers in the language the trusted line names
+#     back a validated language code; the persona answers in the language the trusted line names
 #   - Hermes posts no interim assistant message in Slack: the model's text beside its tool
 #     calls stays out of the channel
 #   - the Slack app neither reads nor opens direct messages, may manage public channels,
@@ -272,23 +270,17 @@ awk '/rm -f "\$DATA\/bot-language.json"/ { cleared = 1 } /poller\.mjs" &/ { star
   || fail "entrypoint.sh does not remove bot-language.json before it starts the poller"
 pass "the poller starts without the last run's language"
 
-# The poller and the plugin relay; they never call a model. Two exceptions: the plugin's
-# language.py asks it which language the service account's background names, and takes back
-# nothing but a validated code; the poller's translate.mjs puts agent text into the bot's
-# language through Hermes, with no tool, and keeps the original when the answer drops a part.
-LANG_PY="$BOT/plugins/bot-channels/language.py"
-TRANSLATE="$BOT/poller/translate.mjs"
-if git grep --untracked -nIiE 'anthropic|openai|api\.claude|/v1/messages|completions' -- "$BOT/poller" "$BOT/lib" "$BOT/plugins" ":!$LANG_PY" ":!$TRANSLATE" ":!$BOT/poller/*.test.mjs"; then
-  fail "poller, client or plugin call an LLM outside $LANG_PY and $TRANSLATE"
+# The poller and the plugin relay; they never call a model, the language read included: a
+# subscription token is refused on a request that is not Claude Code's own. Tests make no request.
+if git grep --untracked -nIiE 'anthropic|openai|api\.claude|/v1/messages|completions' -- "$BOT/poller" "$BOT/lib" "$BOT/plugins" ":!$BOT/plugins/**/test_*.py"; then
+  fail "poller, client or plugin call an LLM"
 fi
-grep -qF 'parse_code(ask(' "$LANG_PY" || fail "$LANG_PY does not validate the model's answer with parse_code"
-grep -qF "spawn(command, ['--safe-mode', '-z', prompt, '-m', model, '--provider', 'anthropic', '-t', 'context_engine']" "$TRANSLATE" \
-  || fail "$TRANSLATE does not call Hermes in safe mode with the tool-free toolset context_engine"
-grep -qF 'const refused = usable(text, answer);' "$TRANSLATE" || fail "$TRANSLATE uses an answer without checking it keeps the protected parts"
-if grep -nE 'fetch\(|https?://' "$TRANSLATE"; then
-  fail "$TRANSLATE reaches a model other than through Hermes"
-fi
-pass "poller, client and plugin make no LLM call but the validated language read and the tool-free translation"
+pass "poller, client and plugin make no LLM call"
+
+# The bot's language is an operator setting, named in the env file's example.
+grep -qE '^PM_BOT_LANGUAGE=' "$BOT/.env.example" || fail ".env.example does not name PM_BOT_LANGUAGE"
+grep -qF 'PM_BOT_LANGUAGE' "$BOT/plugins/bot-channels/language.py" || fail "language.py does not read PM_BOT_LANGUAGE"
+pass "the bot's language is the PM_BOT_LANGUAGE setting"
 
 grep -qF "the language your channel's trusted line names; German when it names none" "$SOUL" \
   || fail "$SOUL does not answer in the trusted line's language, German by default"

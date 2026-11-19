@@ -113,7 +113,7 @@ Also check the limits: after a restart of the bakers.build site a new request is
 
 **On the local stack, with ddev.** Put your model key into the git-ignored `.ddev/.env.e2e` (`ANTHROPIC_API_KEY=…` or `CLAUDE_CODE_OAUTH_TOKEN=…`) and run `ddev e2e up` in the repository; later starts may use `ddev start` or `ddev restart`. It starts the same stack with a real model for the bot, seeds the site and prints its address, `https://hermes-bot.ddev.site:33443`, with a login link for the conductor owner and the requester (`ddev e2e login` prints new ones). Then:
 
-- `ddev e2e chat` talks to the bot as the requester in a fresh request channel; start with the trusted line and prefix it shows;
+- `ddev e2e chat "<request>"` talks to the bot as the requester in a fresh request channel, sending the request with the channel's trusted line (in German; `E2E_LANGUAGE=en` for English); start each later message with the prefix it shows;
 - `ddev e2e slack` follows what the poller posts, renames and archives;
 - `ddev e2e agent <ticket> question` (or `technical-problem`) makes the stub's next run on that ticket ask;
 - `ddev stop` stops the stack, and `ddev delete -O` removes it with its volumes.

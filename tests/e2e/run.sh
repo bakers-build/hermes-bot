@@ -14,7 +14,8 @@
 #   tests/e2e/run.sh up [IMAGE] [--real]   start and seed the stack for testing by hand, run no
 #                                          scenario; print the site's URL and login links. Needs a
 #                                          model key: talking to the bot by hand needs a real model.
-#   tests/e2e/run.sh chat                  talk to the bot as the requester (hermes chat)
+#   tests/e2e/run.sh chat ["<request>"]    talk to the bot as the requester (hermes chat), the
+#                                          request sent with the channel's trusted line
 #   tests/e2e/run.sh slack                 follow the Slack calls the poller makes
 #   tests/e2e/run.sh agent <ticket> <script>   the stub agent's next run on <ticket> plays
 #                                          tests/e2e/agent/<script>.json (question, technical-problem, …)
@@ -271,12 +272,22 @@ case "${1:-}" in
       fs.writeFileSync(file, JSON.stringify(bot, null, 2));
       console.log(channel);
     ' "$OUT/data/bot-channels.json" "$email")"
+    shift
+    # The channel's trusted line and the requester's prefix, as the gateway and the bot-channels
+    # plugin would add them; Hermes' CLI adds neither.
+    trusted="This is the request channel $channel. Its conversation link is https://e2e.slack.com/archives/$channel. Its ticket: none yet. Its requester's e-mail address: $email. Answer in the language with ISO 639-1 code ${E2E_LANGUAGE:-de}."
+    prefix='[Requester | Slack user <@U0E2EREQ>]'
+    if [ $# -gt 0 ]; then
+      echo "Channel $channel. Later messages: start each with $prefix (another person: [Name | Slack user <@U…>])."
+      exec docker compose "${COMPOSE[@]}" exec -u hermes -w /opt/data pm-bot hermes chat -q "$trusted
+$prefix $*"
+    fi
     cat <<TEXT
-Hermes adds no Slack context here: start with the channel's trusted line and the requester's
-prefix, as the gateway and the bot-channels plugin would, for example:
+Hermes adds no Slack context here. Start with the request: ddev e2e chat "<your request>" (or
+tests/e2e/run.sh chat "…"). Or paste these two lines as your first message:
 
-This is the request channel $channel. Its conversation link is https://e2e.slack.com/archives/$channel. Its ticket: none yet. Its requester's e-mail address: $email. Answer in the language with ISO 639-1 code en.
-[Requester | Slack user <@U0E2EREQ>] We need a login page for members.
+$trusted
+$prefix <your request>
 
 TEXT
     exec docker compose "${COMPOSE[@]}" exec -u hermes -w /opt/data pm-bot hermes chat

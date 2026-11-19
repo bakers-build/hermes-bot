@@ -103,8 +103,10 @@ class LanguageFile(unittest.TestCase):
 
     def test_the_start_resets_the_language_to_german(self):
         os.environ.update(SLACK_ALLOWED_CHANNELS=HOME)
-        with self.assertLogs("pm_bot.bot_channels", "ERROR"):  # no env for the read in this test
+        os.environ.pop("PM_BOT_LANGUAGE", None)
+        with self.assertLogs("pm_bot.bot_channels", "WARNING") as logs:
             plugin.factory(App(), Adapter([]))
+        self.assertIn("WARNING:pm_bot.bot_channels:bot-channels: answering in de", logs.output)
         self.assertEqual(self.language(), {"language": "de"})
 
     def test_a_plugin_that_stays_off_still_resets_it(self):

@@ -343,15 +343,17 @@ awk '/rm -f "\$DATA\/bot-language.json"/ { cleared = 1 } /poller\.mjs" &/ { star
   || fail "entrypoint.sh does not remove bot-language.json before it starts the poller"
 pass "the poller starts without the last run's language"
 
-# The poller and the plugin relay; they never call a model. One exception: the plugin's
-# language.py asks it which language the service account's background names, and takes back
-# nothing but a validated code.
-LANG_PY="$BOT/plugins/bot-channels/language.py"
-if git grep --untracked -nIiE 'anthropic|openai|api\.claude|/v1/messages|completions' -- "$BOT/poller" "$BOT/lib" "$BOT/plugins" ":!$LANG_PY"; then
-  fail "poller, client or plugin call an LLM outside $LANG_PY"
+# The poller and the plugin relay; they never call a model, the language read included: a
+# subscription token is refused on a request that is not Claude Code's own. Tests make no request.
+if git grep --untracked -nIiE 'anthropic|openai|api\.claude|/v1/messages|completions' -- "$BOT/poller" "$BOT/lib" "$BOT/plugins" ":!$BOT/plugins/**/test_*.py"; then
+  fail "poller, client or plugin call an LLM"
 fi
-grep -qF 'parse_code(ask(' "$LANG_PY" || fail "$LANG_PY does not validate the model's answer with parse_code"
-pass "poller, client and plugin make no LLM call but the validated language read"
+pass "poller, client and plugin make no LLM call"
+
+# The bot's language is an operator setting, named in the env file's example.
+grep -qE '^PM_BOT_LANGUAGE=' "$BOT/.env.example" || fail ".env.example does not name PM_BOT_LANGUAGE"
+grep -qF 'PM_BOT_LANGUAGE' "$BOT/plugins/bot-channels/language.py" || fail "language.py does not read PM_BOT_LANGUAGE"
+pass "the bot's language is the PM_BOT_LANGUAGE setting"
 
 grep -qF "the language your channel's trusted line names; German when it names none" "$SOUL" \
   || fail "$SOUL does not answer in the trusted line's language, German by default"

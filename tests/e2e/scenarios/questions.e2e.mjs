@@ -25,6 +25,10 @@ test('given a run that asked a question, when someone in the channel answers, th
   const ticket = await workingTicket(ch, 'Ask before building', 'question');
   const asked = await waitingOn(ticket.identifier, 'Question');
   const before = asked.comments.length;
+  const question = 'Should members also sign in with a username';
+  const relayed = async () => (await slack.posts(ch.id)).filter((text) => text.includes(question));
+  await waitFor('the question in the channel', async () => (await relayed()).length > 0);
+  await never('a second copy of the question', async () => (await relayed()).length > 1 && (await relayed()).length, { ms: 6_000 });
   if (scripted) {
     await model.script([
       { user: 'e-mail address', reply: [{ tool: 'bakers_ticket_read', input: { ticket: ticket.identifier } }] },
@@ -50,6 +54,8 @@ test('given a run that hit a technical problem, when someone replies in the chan
   const ch = channel('C0E2E0502');
   const ticket = await workingTicket(ch, 'Stuck on the test database', 'technical-problem');
   const stuck = await waitingOn(ticket.identifier, 'technical problem');
+  await waitFor('the technical problem in the channel', async () =>
+    (await slack.posts(ch.id)).some((text) => text.includes('The test database of the project cannot be reached')));
   if (scripted) {
     await model.script([
       { user: 'any news', reply: [{ tool: 'bakers_ticket_read', input: { ticket: ticket.identifier } }] },

@@ -13,8 +13,8 @@
   ticket and requester's e-mail address, which the model cannot see otherwise, and the bot's
   language; the main channel gets the language alone. The address comes from Slack's users.info
   (scope users:read.email) when the request channel opens; without it the line says none.
-- Language: read once at start from the service account's background (language.py), German
-  until then and on any failure; it also picks the plugin's own texts (messages.json).
+- Language: PM_BOT_LANGUAGE in the container's env, read once at start (language.py), German
+  when unset or not an ISO 639-1 code; it also picks the plugin's own texts (messages.json).
 - Recovery: a requester's turn that a hard restart left unknown settles as interrupted on the
   channel's next message instead of pausing the conversation; it is not run again.
 
@@ -57,7 +57,7 @@ def factory(app, adapter):
     from slack_bolt.response import BoltResponse
     from slack_sdk.errors import SlackApiError
 
-    # First, so the poller posts German until this start's read is done, never a previous run's language.
+    # First, so the poller never posts a previous run's language, also when the plugin stays off.
     language.write(LANGUAGE_FILE, DEFAULT_LANGUAGE)
     home = (os.environ.get("SLACK_ALLOWED_CHANNELS") or "").strip()
     workspace = os.environ.get("SLACK_WORKSPACE_URL") or ""

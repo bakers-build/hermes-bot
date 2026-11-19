@@ -10,13 +10,17 @@ import { cancel, channel, chat, model, never, pollerRecord, runEnded, scripted, 
 const messages = JSON.parse(readFileSync(new URL('../../../poller/messages.json', import.meta.url), 'utf8'));
 const ENDED = ['done', 'cancelled', 'failed', 'expired'];
 
+// These scenarios play the stub agent's scripts (tests/e2e/agent); --real gives the conductor Claude
+// Code, which works the ticket its own way.
+const stub = { skip: !scripted && "plays the stub agent's scripts; --real runs Claude Code in the conductor" };
+
 const waitingOn = (identifier, label) =>
   waitFor(`${identifier} frozen with ${label}`, async () => {
     const t = await site.ticket(identifier);
     return t.frozen && t.labels.includes(label) && t;
   });
 
-test('given a run that asked a question, when someone in the channel answers, then the answer is on the ticket and the work goes on', async () => {
+test('given a run that asked a question, when someone in the channel answers, then the answer is on the ticket and the work goes on', stub, async () => {
   const ch = channel('C0E2E0501');
   const ticket = await workingTicket(ch, 'Ask before building', 'question');
   const asked = await waitingOn(ticket.identifier, 'Question');
@@ -42,7 +46,7 @@ test('given a run that asked a question, when someone in the channel answers, th
   await cancel(ticket.identifier);
 });
 
-test('given a run that hit a technical problem, when someone replies in the channel, then nothing is written to the ticket', async () => {
+test('given a run that hit a technical problem, when someone replies in the channel, then nothing is written to the ticket', stub, async () => {
   const ch = channel('C0E2E0502');
   const ticket = await workingTicket(ch, 'Stuck on the test database', 'technical-problem');
   const stuck = await waitingOn(ticket.identifier, 'technical problem');
@@ -63,7 +67,7 @@ test('given a run that hit a technical problem, when someone replies in the chan
   await cancel(ticket.identifier);
 });
 
-test('given a run that ended with a freeze before its Question label, when the label follows, then no problem is posted', async () => {
+test('given a run that ended with a freeze before its Question label, when the label follows, then no problem is posted', stub, async () => {
   const ch = channel('C0E2E0503');
   const ticket = await workingTicket(ch, 'Remember the member', 'question-freeze-first');
   const runs = await runEnded(ticket.identifier);

@@ -61,7 +61,7 @@ load_stack() {
 build_image() {
   local tag=pm-bot:e2e
   say "building $tag from the working copy"
-  docker build -t "$tag" \
+  docker build -t "$tag" --label "org.opencontainers.image.revision=$(git -C "$ROOT" rev-parse HEAD)" \
     --build-context bundle=https://github.com/bakers-build/bakers-build.git#next:.claude/skills/bakers-build \
     --build-context superpowers=https://github.com/obra/superpowers.git#bb92a77741419a4ab5f06e711a283343f1ada0c3 \
     --build-context mattpocock=https://github.com/mattpocock/skills.git#d1478fcb140db0b93c0c8df17bcfd311844749d0 "$ROOT" >&2
@@ -229,7 +229,9 @@ case "${1:-}" in
     [ -n "${ANTHROPIC_API_KEY:-}${CLAUDE_CODE_OAUTH_TOKEN:-}" ] \
       || die "the ddev stack needs a model key: put ANTHROPIC_API_KEY=… or CLAUDE_CODE_OAUTH_TOKEN=… into .ddev/.env.e2e"
     image="$(sed -n 's/^PM_BOT_IMAGE=//p' "$ROOT/.ddev/e2e.env")"
-    docker image inspect "$image" >/dev/null 2>&1 || [ "$(build_image)" = "$image" ] || die "could not build $image"
+    # The bot of the worktree's commit: rebuilt when the image is another's (mostly from cache).
+    built="$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image" 2>/dev/null || true)"
+    [ "$built" = "$(git -C "$ROOT" rev-parse HEAD)" ] || [ "$(build_image)" = "$image" ] || die "could not build $image"
     mkdir -p "$OUT/data" "$OUT/clone" "$OUT/agent" "$OUT/conductor"
     [ -f "$OUT/clone/README.md" ] || cp "$ROOT/README.md" "$OUT/clone/"
     # Compose needs the bot's env file to exist; ddev-seed writes it.

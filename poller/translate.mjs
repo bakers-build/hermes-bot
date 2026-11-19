@@ -91,7 +91,8 @@ export function hermesTranslate({ model, timeout = 60_000, command = 'hermes' })
       child.on('close', (status) => {
         clearTimeout(timer);
         if (status === 0) resolve(stdout.trim());
-        else reject(new Error(`hermes -z exited ${status}: ${stderr.trim()}`));
+        // Hermes prints a failed model call's reason on its output, not its error output.
+        else reject(new Error(`hermes -z exited ${status}: ${(stderr.trim() || stdout.trim()).replace(/\s*\n\s*/g, ' ')}`));
       });
     });
 }

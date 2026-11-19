@@ -62,3 +62,8 @@ test('hermesTranslate rejects a call that outlasts its timeout', async (t) => {
 test('hermesTranslate rejects when the command does not exist', async () => {
   await assert.rejects(hermesTranslate({ command: '/nonexistent/hermes', model: 'm' })('Text.', 'de'), /ENOENT/);
 });
+
+test('hermesTranslate rejects with the reason Hermes prints on its output when its error output is empty', async (t) => {
+  const hermes = fakeHermes(t, "process.stdout.write('Anthropic rejected your API key.\\n\\nProvider said: HTTP 401\\n'); process.exit(2);");
+  await assert.rejects(hermesTranslate({ command: hermes.command, model: 'm' })('Text.', 'de'), /exited 2: Anthropic rejected your API key\. Provider said: HTTP 401/);
+});

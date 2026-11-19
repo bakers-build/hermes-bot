@@ -45,7 +45,8 @@ At the end of `working`, start the test environment and hand it over: `ddev e2e 
 worktree (later `ddev restart`), on the branch's code. Its output names the site
 (`https://hermes-bot.ddev.site:33443`) and a login link per seeded account (the conductor owner and
 the requester); put the site link and both login links into the summary's *Manual review*, with
-`ddev e2e chat`, `ddev e2e slack` and `ddev e2e agent <ticket> question` as what to try. When
+`ddev e2e chat "<request>"` and `ddev e2e slack` as what to try: Claude Code in the conductor
+works what the bot hands over. When
 `.ddev/.env.e2e` holds no model key, give `ddev e2e up` as the reviewer's first action instead,
 naming the key it needs. One worktree's stack runs at a time (the ddev project is `hermes-bot`):
 when ddev names another worktree's project, `ddev stop --unlist hermes-bot` there first.

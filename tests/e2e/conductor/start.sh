@@ -31,4 +31,15 @@ if (!text.includes('addon-claude')) text = text.replace(/(\n\s*label:[^\n]*\n)/,
 fs.writeFileSync(file, text);
 NODE
 fi
+# Claude Code takes the checkout's settings (the allowed bakers tools) only in a trusted project.
+node - "$HOME/.claude.json" <<'NODE'
+const fs = require('node:fs');
+const file = process.argv[2];
+let state = {};
+try { state = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
+state.hasCompletedOnboarding = true;
+state.projects ??= {};
+state.projects['/work/checkout'] = { ...state.projects['/work/checkout'], hasTrustDialogAccepted: true };
+fs.writeFileSync(file, JSON.stringify(state, null, 2), { mode: 0o600 });
+NODE
 exec bakers conductor start --foreground --adopt "$(value conductor_uuid)"

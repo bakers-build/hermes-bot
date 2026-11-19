@@ -13,6 +13,10 @@ RUN chmod 755 /e2e/stub/claude \
 # The project checkout the conductor works in: run worktrees branch off its HEAD; no remote needed.
 COPY project.config.js executor.mjs /work/checkout/.bakers/
 COPY WORKFLOW.md /work/checkout/
+# The project's entry skill, which WORKFLOW.md names and Claude Code finds in the run's worktree,
+# and its settings: a run has no one to approve a tool, so the bakers tools are allowed outright.
+COPY skills/ /work/checkout/.claude/skills/
+COPY claude-settings.json /work/checkout/.claude/settings.json
 # The conductor runs as the host's user (compose.yaml), so the files it leaves in tests/e2e/out are
 # the user's: the checkout is writable and trusted by anyone.
 RUN git config --system user.email conductor@e2e.test && git config --system user.name conductor \

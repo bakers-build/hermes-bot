@@ -115,10 +115,10 @@ Also check the limits: after a restart of the bakers.build site a new request is
 
 - `ddev e2e chat "<request>"` talks to the bot as the requester in a fresh request channel, sending the request with the channel's trusted line (in German; `E2E_LANGUAGE=en` for English); start each later message with the prefix it shows;
 - `ddev e2e slack` follows what the poller posts, renames and archives;
-- `ddev e2e agent <ticket> question` makes the stub's run on that ticket ask (`technical-problem`: report a technical problem, `done`: finish with a summary and move to `review`); a run without a script waits for one;
+- with the stub, `ddev e2e agent <ticket> question` makes its run on that ticket ask (`technical-problem`: report a technical problem, `done`: finish with a summary and move to `review`); a run without a script waits for one;
 - `ddev stop` stops the stack, and `ddev delete -O` removes it with its volumes.
 
-`E2E_CONDUCTOR_AGENT=claude` in `.ddev/e2e.env` gives the conductor Claude Code instead of the stub. Without ddev, `ANTHROPIC_API_KEY=… bash tests/e2e/run.sh up` does the same on `http://nginx:<port>` (add `127.0.0.1 nginx` to `/etc/hosts`), with `run.sh chat | slack | agent | login | down`. Steps 2, 5, 6, 7 and 8 work on either; their Slack side is read from `slack`, except the relayed question and technical-problem texts, which go through Hermes to Slack and fail without it. Steps 1, 3, 4, 9 and 10 and the Slack side of 2, 5 and 6 need a real workspace.
+In ddev the conductor runs Claude Code with the same key, so handed-over tickets are really worked; `E2E_CONDUCTOR_AGENT=stub` in `.ddev/e2e.env` puts the stub back for `ddev e2e agent`. Without ddev, `ANTHROPIC_API_KEY=… bash tests/e2e/run.sh up` does the same on `http://nginx:<port>` (add `127.0.0.1 nginx` to `/etc/hosts`), with `run.sh chat | slack | agent | login | down`. Steps 2, 5, 6, 7 and 8 work on either; their Slack side is read from `slack`, except the relayed question and technical-problem texts, which go through Hermes to Slack and fail without it. Steps 1, 3, 4, 9 and 10 and the Slack side of 2, 5 and 6 need a real workspace.
 
 ## Approve what it learns
 

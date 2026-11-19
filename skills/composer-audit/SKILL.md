@@ -5,54 +5,80 @@ description: The nightly Composer security audit of the project's clone. Use onl
 
 # Nightly Composer audit
 
-You run unattended, once a night. Nobody reads along: your final answer goes into the project's main channel, so it is either one line or `[SILENT]`.
+You run unattended, once a night. Your final answer goes into the project's main channel as written, so it is one line, or a line followed by `[SILENT]` when the channel should hear nothing.
 
-The script `/opt/data/skills/composer-audit/audit.mjs` does the fixed work: it reads the box's pull marker `/opt/data/clone-pulled.json` (an audit runs only on a marker with `"ok": true` newer than the last audit), finds every `composer.lock` with a `composer.json` beside it outside `.git/`, `vendor/` and `node_modules/`, runs `composer audit --locked --format=json --no-plugins --no-scripts --abandoned=ignore` in each lock's directory, and compares the `advisories` with the last audit in `/opt/data/audit-state.json` (per advisory ID and lock file: package, installed, affected range, fixed in, severity, CVE, link, first seen). You decide; the script writes the state only when you commit.
+Your shell starts in the project's read-only clone. Run each command below as written, filling in only the `<dir>` and `<package>` it names. Every advisory detail reaches bakers.build through your tools, never through a shell command. Keep nothing between nights: the open audit ticket is the only memory.
 
-Run exactly the two commands below in the terminal, as written. Every advisory detail reaches bakers.build through your tools, never through a shell command.
+## 1. Is the clone fresh?
 
-## 1. Audit
+Run `cat /opt/data/clone-pulled.json` (the box's pull marker `{ "at", "head", "ok", "error" }`), `cat /opt/data/bot-language.json` and `date -u +%Y-%m-%dT%H:%M:%SZ`.
 
-Run `node /opt/data/skills/composer-audit/audit.mjs run` and read its JSON.
+The clone is fresh when the marker has `"ok": true` and its `at` is at most 24 hours before the date. Otherwise answer the reason as the first line and `[SILENT]` as the last, and stop:
 
-- `status: "skip"` → answer `reason` as the first line and `[SILENT]` as the last. Stop.
-- `status: "error"` → answer one line: `Composer audit failed:` and `reason`. Write nothing anywhere. Stop.
-- `status: "audited"` → go on. You now hold `ticket`, `count`, `new`, `gone`, `title`, `description`, `comment` and `language`.
+- no marker file: `Composer audit skipped: no pull marker, so the clone may be stale.`
+- `"ok": false`: `Composer audit skipped: the last pull failed:` and its `error` quoted.
+- `at` older than 24 hours or not a time: `Composer audit skipped: no pull in the last 24 hours (last pull <at>).`
 
-Write your answer line in the language with ISO 639-1 code `language`.
+Write every answer line in the language whose ISO 639-1 code `bot-language.json` holds (`de` when it is missing).
 
-## 2. Is the audit ticket open?
+Done when the clone is fresh, or you have answered why not.
 
-When `ticket` is set, read it with `mcp_bakers__tool_api__bakers_ticket_read` (`newest: 0`). It is open unless its state is `done` or `cancelled`. With no `ticket`, none is open. When it is closed, every current advisory counts as new.
+## 2. Audit every lock file
 
-When the read fails, answer one line: `Composer audit: cannot read the audit ticket` with `ticket` and the error. Commit nothing and stop; the next night reads it again.
+Run `find . \( -name composer.lock -o -name composer.json \) -not -path '*/.git/*' -not -path '*/vendor/*' -not -path '*/node_modules/*'`. Audit each directory that holds both a `composer.lock` and a `composer.json`; the others are skipped.
 
-Done when you know: open audit ticket, or none.
+In each such directory `<dir>` (as `find` printed it, for example `./web/themes/custom/yf`), run `composer audit --locked --format=json --no-plugins --no-scripts --abandoned=ignore --working-dir=<dir>`. Exit code 0 means no advisories (for a lock without packages Composer prints `No packages - skipping audit.` instead of JSON). Exit code 1 means advisories were found, listed in the JSON, and counts as success too. Any other exit code, or exit code 1 without JSON, fails the night: answer one line, `Composer audit failed:` with the directory and Composer's error, create and comment nothing, and stop. The next night tries again.
 
-## 3. Act on the one branch that fits
+`advisories` maps each affected package to its list of advisories. For every advisory, record:
 
-| Branch | Do | Commit | Answer |
+| Field | Source |
+|---|---|
+| lock file | `<dir>/composer.lock` |
+| package | `packageName` |
+| installed | the `"version"` line under the package in `grep -A1 '"name": "<package>",' <dir>/composer.lock` |
+| fixed in | the `<` bound of the `affectedVersions` range the installed version falls in; `none yet` without one |
+| severity | `severity`, or `unknown` |
+| CVE/link | `cve` linked to `link`; the `advisoryId` when there is no CVE |
+
+Done when every directory is audited and every advisory recorded, or the night has failed.
+
+## 3. Find the open audit ticket
+
+Call `mcp_bakers__tool_api__bakers_ticket_search` with `query: "Security updates:"` and `project: "${PM_BOT_PROJECT}"`. The open audit ticket is the newest result whose title starts with `Security updates:` and whose state is neither `done` nor `cancelled`.
+
+When the search fails, answer one line, `Composer audit: cannot search for the audit ticket` with the error, write nothing, and stop: without the search a second ticket could follow.
+
+Done when you know the open audit ticket, or that none is open.
+
+## 4. Write the result
+
+The **tables**: one per lock file with advisories, under a `### <lock file>` heading, with the columns package, installed, fixed in, severity, CVE/link, one row per advisory. Under each table, the line that updates its packages: `composer update <package> --with-dependencies` with every affected package of that lock file, run in its directory.
+
+`<n>` is the number of distinct advisory IDs; `<packages>` lists the affected packages, comma-separated, sorted.
+
+Take the one branch that fits:
+
+| Open audit ticket | Advisories | Do | Answer |
 |---|---|---|---|
-| no open ticket, `count` is 0 | nothing | `commit` (with a closed `ticket`: `commit --no-ticket`) | `Composer audit: no advisories in <n> lock files.`, then `[SILENT]` |
-| open ticket, `new` and `gone` empty | nothing | `commit` | `Composer audit: unchanged since the last night.`, then `[SILENT]` |
-| open ticket, `new` or `gone` not empty | one `mcp_bakers__tool_api__bakers_comment_create` on that ticket, `type: "comment"`, `body` = `comment` exactly | `commit`, after the comment is stored | one line: what changed, linking the ticket |
-| no open ticket, `count` above 0 | *Create the audit ticket* below | inside it | one line: the ticket link and the count |
+| none | none | nothing | `Composer audit: no advisories in <lock count> lock files.`, then `[SILENT]` |
+| none | some | *Create the audit ticket* below | the ticket as a Markdown link, `<identifier> · <title>`, the count and the channel as `<#<channel>>` |
+| open | some | one `mcp_bakers__tool_api__bakers_comment_create` on it, `type: "comment"`, body: the date, `Security updates: <n> Composer advisories (<packages>)` and the tables | one line: `<n>` advisories still open, linking the ticket |
+| open | none | one `mcp_bakers__tool_api__bakers_comment_create` on it, `type: "comment"`, body: the date and that none remain in any of the `<lock count>` lock files, so the ticket can be closed | one line: none remain, linking the ticket |
 
-Commit means `node /opt/data/skills/composer-audit/audit.mjs commit`, with the flag the branch names. A write that fails stays uncommitted, so the next night tries again; say in your answer what failed.
+The comment repeats every night while the ticket is open, so it always shows the current state.
 
 ## Create the audit ticket
 
 In this order:
 
-1. `mcp_bakers__tool_api__bakers_ticket_create` with `project: "${PM_BOT_PROJECT}"`, `workflow: "${PM_BOT_TICKET_WORKFLOW}"`, `type: "chore"`, `title` = `title` (the form `Security updates: <n> Composer advisories (<packages>)`) and `description` = `description` exactly: a table per lock file (package, installed, fixed in, severity, CVE/link) and its `composer update <package> --with-dependencies` line. Pass nothing else.
-2. Right after it, before any other write: `node /opt/data/skills/composer-audit/audit.mjs commit --ticket <identifier>` with the identifier it returned. This keeps a second ticket from ever being created.
-3. `mcp_bakers__tool_api__bakers_conductor_list` with the project. When the project has exactly one active conductor, call `mcp_bakers__tool_api__bakers_ticket_update` with the ticket, `labels_add: ["security"]` and `conductor` = its UUID. Otherwise call it with `labels_add: ["security"]` alone, and your answer says no conductor was set and why (none active, or several).
-4. `open_request_channel` with `title`. Then `mcp_bakers__tool_api__bakers_ticket_transition` with the ticket and `links: [{"uri": <link>, "title": "Slack channel"}]`, without a state.
+1. `mcp_bakers__tool_api__bakers_ticket_create` with `project: "${PM_BOT_PROJECT}"`, `workflow: "${PM_BOT_TICKET_WORKFLOW}"`, `type: "chore"`, `title: "Security updates: <n> Composer advisories (<packages>)"` and `description`: one sentence that the nightly Composer audit found these advisories in the clone at the marker's `head`, then the tables. Pass nothing else.
+2. `mcp_bakers__tool_api__bakers_conductor_list` with the project. When the project has exactly one active conductor, call `mcp_bakers__tool_api__bakers_ticket_update` with the ticket, `labels_add: ["security"]` and `conductor` = its UUID. Otherwise call it with `labels_add: ["security"]` alone, and your answer says no conductor was set and why (none active, or several).
+3. `open_request_channel` with the title. Then `mcp_bakers__tool_api__bakers_ticket_transition` with the ticket and `links: [{"uri": <link>, "title": "Slack channel"}]`, without a state.
 
-Answer in one line: a Markdown link to the ticket, with `<identifier> · <title>` as its text and the `url` the create returned as its target, then the advisory count and the channel as `<#<channel>>`.
+When a step after the create fails, your answer names it, so a person can finish it by hand.
 
 ## Rules
 
 - The ticket carries the label `security` and no other label you add. A person qualifies it.
 - One run creates at most one ticket and one comment.
-- An uncertain write (a timeout, a lost reply) is settled by reading the ticket, never by a second call.
+- An uncertain write (a timeout, a lost reply) is settled by reading: search again for the ticket, or read its comments with `mcp_bakers__tool_api__bakers_ticket_read`. Never send the write a second time.

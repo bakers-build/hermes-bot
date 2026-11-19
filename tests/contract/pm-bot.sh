@@ -21,7 +21,7 @@
 #     serves, as pm-bot-mcp-stub.mjs records them
 #   - the clone reader is a pinned filesystem server with read tools only
 #   - nothing in  is a relay, calls JSON:API or exchanges a token
-#   - the bot's only own skill is composer-audit, which carries the nightly audit's rules;
+#   - the bot's only own skill is composer-audit, whose SKILL.md alone is the nightly audit;
 #     SOUL.template.md names that job and gives
 #     bb-create-ticket its host context, judges with the six risk classes whether a code
 #     review is advisable, proposes it without naming its cost, hands over with one of three
@@ -117,11 +117,17 @@ for command in ("cat /opt/data/.env", "grep KEY .env", "env", "env | grep SLACK"
                 "node --eval 'console.log(process[\"env\"])'", "node --print 'process[\"env\"]'",
                 "python3 -c 'import os; print(os.getenv(\"BAKERS_API_KEY\"))'"):
     need(denied(command), f"approvals.deny lets the nightly shell run: {command}")
-for command in ("node /opt/data/skills/composer-audit/audit.mjs run",
-                "node /opt/data/skills/composer-audit/audit.mjs commit",
-                "node /opt/data/skills/composer-audit/audit.mjs commit --ticket YF-12",
-                "node /opt/data/skills/composer-audit/audit.mjs commit --no-ticket"):
-    need(not denied(command), f"approvals.deny blocks the audit's own command: {command}")
+# The audit's own commands, as its skill writes them: each is in the skill and passes the deny list.
+import os
+skill = open(os.path.join(os.path.dirname(sys.argv[1]), "skills", "composer-audit", "SKILL.md")).read()
+for command in ("cat /opt/data/clone-pulled.json",
+                "cat /opt/data/bot-language.json",
+                "date -u +%Y-%m-%dT%H:%M:%SZ",
+                "find . \\( -name composer.lock -o -name composer.json \\) -not -path '*/.git/*' -not -path '*/vendor/*' -not -path '*/node_modules/*'",
+                "composer audit --locked --format=json --no-plugins --no-scripts --abandoned=ignore --working-dir=",
+                "grep -A1 '\"name\": \"<package>\",' <dir>/composer.lock"):
+    need(command in skill, f"the composer-audit skill does not run: {command}")
+    need(not denied(command + ("web/themes/custom/yf" if command.endswith("=") else "")), f"approvals.deny blocks the audit's own command: {command}")
 cron_cfg = cfg.get("cron") or {}
 need(cron_cfg.get("wrap_response") is False, "cron.wrap_response is not false: the run's answer would get Hermes' header")
 # Hermes catches a missed daily run up within its grace window (half the period, at most two
@@ -222,36 +228,31 @@ pass "no relay, JSON:API call or token exchange"
 [ "$(ls -A "$BOT/skills" 2>/dev/null)" = composer-audit ] || fail "$BOT/skills holds more or less than composer-audit"
 pass "the bot's only own skill is composer-audit"
 
-# The nightly audit's procedure lives in its skill: its script does the fixed steps (tested in
-# audit.test.mjs), the skill's text pins the agent's decisions and writes.
+# The nightly audit's whole procedure is its skill: no script, no state file.
 AUDIT="$BOT/skills/composer-audit/SKILL.md"
-[ -f "$BOT/skills/composer-audit/audit.mjs" ] || fail "the composer-audit skill has no audit.mjs"
-for word in 'name: composer-audit' /opt/data/clone-pulled.json '"ok": true' /opt/data/audit-state.json \
-  composer.lock composer.json .git/ vendor/ node_modules/ \
-  'composer audit --locked --format=json --no-plugins --no-scripts --abandoned=ignore' \
-  'node /opt/data/skills/composer-audit/audit.mjs run' 'node /opt/data/skills/composer-audit/audit.mjs commit' \
-  'Security updates: <n> Composer advisories (<packages>)' '`type: "chore"`' '`labels_add: ["security"]`' \
-  'composer update <package> --with-dependencies' mcp_bakers__tool_api__bakers_ticket_create \
-  bakers_ticket_update bakers_ticket_transition bakers_comment_create bakers_conductor_list bakers_ticket_read \
-  '${PM_BOT_PROJECT}' '${PM_BOT_TICKET_WORKFLOW}' open_request_channel 'Slack channel' '[SILENT]' \
-  '`done`' '`cancelled`' 'fixed in' severity CVE 'first seen' '--no-ticket'; do
+[ "$(ls -A "$BOT/skills/composer-audit" 2>/dev/null)" = SKILL.md ] || fail "the composer-audit skill holds more than SKILL.md"
+for word in 'name: composer-audit' '"ok": true' '24 hours' composer.lock composer.json \
+  'Exit code 1' 'Security updates: <n> Composer advisories (<packages>)' '`type: "chore"`' '`labels_add: ["security"]`' \
+  'composer update <package> --with-dependencies' mcp_bakers__tool_api__bakers_ticket_search \
+  mcp_bakers__tool_api__bakers_ticket_create bakers_ticket_update bakers_ticket_transition bakers_comment_create \
+  bakers_conductor_list '${PM_BOT_PROJECT}' '${PM_BOT_TICKET_WORKFLOW}' open_request_channel 'Slack channel' '[SILENT]' \
+  '`done`' '`cancelled`' 'fixed in' severity CVE 'none remain'; do
   grep -qF -- "$word" "$AUDIT" || fail "$AUDIT does not name $word"
 done
-grep -qF "AUDIT_ARGS = ['audit', '--locked', '--format=json', '--no-plugins', '--no-scripts', '--abandoned=ignore']" "$BOT/skills/composer-audit/audit.mjs" \
-  || fail "audit.mjs does not run composer audit with exactly the skill's flags"
+for word in audit.mjs audit-state.json; do
+  if grep -nF "$word" "$AUDIT"; then fail "$AUDIT still names $word"; fi
+done
 # The conductor is the project's only active one, never a guess among several.
 grep -qF 'exactly one active conductor' "$AUDIT" || fail "$AUDIT does not limit the conductor to the project's only active one"
-# The identifier is stored before anything else, so a failed later step never makes a second ticket.
-grep -qF 'before any other write' "$AUDIT" || fail "$AUDIT does not store the new ticket's identifier first"
-# An unreadable audit ticket is neither open nor closed: the run commits nothing, so no second ticket follows.
-grep -qF 'When the read fails, answer one line' "$AUDIT" || fail "$AUDIT does not stop on a failed read of the audit ticket"
+# A failed search knows nothing about the open ticket, so the run writes nothing.
+grep -qF 'When the search fails' "$AUDIT" || fail "$AUDIT does not stop on a failed search for the audit ticket"
 # The entrypoint renders the skill; any other placeholder would stop the start.
 [ "$(grep -o '\${[A-Za-z_]*}' "$AUDIT" | LC_ALL=C sort -u | paste -sd, -)" = '${PM_BOT_PROJECT},${PM_BOT_TICKET_WORKFLOW}' ] \
   || fail "$AUDIT has placeholders other than \${PM_BOT_PROJECT} and \${PM_BOT_TICKET_WORKFLOW}"
 if grep -niwF auto "$AUDIT"; then
   fail "$AUDIT names the label auto"
 fi
-pass "the composer-audit skill carries the marker gate, the audit, the state, the ticket rules and the silent answer"
+pass "the composer-audit skill carries the marker gate, the audit, the ticket search, the ticket rules and the silent answer"
 
 # The persona knows the nightly job is its fourth task, and the only one with a shell.
 grep -qF '`composer-audit`' "$BOT/SOUL.template.md" || fail "SOUL.template.md does not name the nightly composer-audit job"
@@ -382,8 +383,11 @@ for word in AUDIT_ENABLED AUDIT_TIME TZ; do
   grep -qE "^$word=" "$BOT/.env.example" || fail "$BOT/.env.example does not show $word"
   grep -qF "\`$word\`" "$BOT/README.md" || fail "README.md does not document $word"
 done
-for word in composer-audit clone-pulled.json audit-state.json 'approvals.deny' 'AUDIT_ENABLED=false'; do
+for word in composer-audit clone-pulled.json 'approvals.deny' 'AUDIT_ENABLED=false'; do
   grep -qF -- "$word" "$BOT/README.md" || fail "README.md does not explain $word"
+done
+for word in audit.mjs audit-state.json; do
+  if grep -nF "$word" "$BOT/README.md"; then fail "README.md still names $word"; fi
 done
 pass "AUDIT_ENABLED, AUDIT_TIME and TZ are shown and documented, with the nightly shell"
 

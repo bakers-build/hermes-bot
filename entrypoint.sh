@@ -37,12 +37,6 @@ case "$SLACK_ALLOWED_CHANNELS" in
   *[,\ ]*) echo "pm-bot: SLACK_ALLOWED_CHANNELS must name exactly one channel" >&2; exit 1 ;;
 esac
 
-# The nightly audit's time, HH:MM in the container's time zone (TZ).
-AUDIT_TIME="${AUDIT_TIME:-03:30}"
-[[ "$AUDIT_TIME" =~ ^([01][0-9]|2[0-3]):([0-5][0-9])$ ]] \
-  || { echo "pm-bot: AUDIT_TIME must be HH:MM between 00:00 and 23:59, not $AUDIT_TIME" >&2; exit 1; }
-audit_schedule="$((10#${BASH_REMATCH[2]})) $((10#${BASH_REMATCH[1]})) * * *"
-
 # Every user in the allowed channels, unless an allowlist names some.
 [ -n "${SLACK_ALLOWED_USERS:-}" ] || export GATEWAY_ALLOW_ALL_USERS=true
 # The conductor is optional; the render refuses empty values, so SOUL.md reads "none".
@@ -74,7 +68,9 @@ mv "$DATA/plugins/bot-channels.new" "$DATA/plugins/bot-channels"
 
 # The nightly composer-audit job, kept to one by its name. Hermes' cron CLI writes the job store
 # directly; the gateway's scheduler runs it. The first line lists the jobs' IDs, the second the
-# first job's schedule. A missing store has no jobs; an unreadable one is named and treated so.
+# first job's schedule. A missing store has no jobs; an unreadable one is named, and the start
+# leaves it and the job alone, so it never adds a second job beside one it cannot see.
+audit_store_ok=true
 audit_store="$(node -e '
   const fs = require("fs");
   if (!fs.existsSync(process.argv[1])) process.exit(0);
@@ -84,7 +80,8 @@ audit_store="$(node -e '
     console.log(jobs[0]?.schedule?.expr ?? "");
   } catch (error) {
     console.error(`pm-bot: cannot read the cron job store: ${error.message}`);
-  }' "$DATA/cron/jobs.json")"
+    process.exit(2);
+  }' "$DATA/cron/jobs.json")" || audit_store_ok=false
 read -r -a audit_jobs <<<"$(sed -n 1p <<<"$audit_store")"
 audit_scheduled="$(sed -n 2p <<<"$audit_store")"
 case "${AUDIT_ENABLED:-true}" in
@@ -92,19 +89,28 @@ case "${AUDIT_ENABLED:-true}" in
     for job in "${audit_jobs[@]}"; do hermes cron remove "$job" >/dev/null || echo "pm-bot: cannot remove cron job $job" >&2; done
     echo "pm-bot: the nightly composer audit is off (AUDIT_ENABLED=${AUDIT_ENABLED})" ;;
   *)
-    audit_prompt="Run the nightly Composer security audit of the project's clone with your skill composer-audit, exactly as it says."
-    audit_args=(--name composer-audit --deliver "slack:$SLACK_ALLOWED_CHANNELS" --skill composer-audit)
-    for job in "${audit_jobs[@]:1}"; do hermes cron remove "$job" >/dev/null || true; done
-    if [ ${#audit_jobs[@]} -gt 0 ]; then
-      # A schedule passed to Hermes recomputes the due time from now, so a night missed while the
-      # container was down would never catch up: it is passed only when AUDIT_TIME changed.
-      audit_reschedule=()
-      [ "$audit_scheduled" = "$audit_schedule" ] || audit_reschedule=(--schedule "$audit_schedule")
-      hermes cron edit "${audit_jobs[0]}" "${audit_args[@]}" "${audit_reschedule[@]}" --prompt "$audit_prompt" >/dev/null
+    # The nightly audit's time, HH:MM in the container's time zone (TZ); read only when it runs.
+    AUDIT_TIME="${AUDIT_TIME:-03:30}"
+    [[ "$AUDIT_TIME" =~ ^([01][0-9]|2[0-3]):([0-5][0-9])$ ]] \
+      || { echo "pm-bot: AUDIT_TIME must be HH:MM between 00:00 and 23:59, not $AUDIT_TIME" >&2; exit 1; }
+    audit_schedule="$((10#${BASH_REMATCH[2]})) $((10#${BASH_REMATCH[1]})) * * *"
+    if [ "$audit_store_ok" = false ]; then
+      echo "pm-bot: composer-audit is not registered: fix or remove $DATA/cron/jobs.json and restart" >&2
     else
-      hermes cron create "${audit_args[@]}" "$audit_schedule" "$audit_prompt" >/dev/null
-    fi && echo "pm-bot: composer-audit at $audit_schedule (${TZ:-UTC})" \
-      || echo "pm-bot: cannot register the composer-audit cron job; the nightly audit does not run" >&2 ;;
+      audit_prompt="Run the nightly Composer security audit of the project's clone with your skill composer-audit, exactly as it says."
+      audit_args=(--name composer-audit --deliver "slack:$SLACK_ALLOWED_CHANNELS" --skill composer-audit)
+      for job in "${audit_jobs[@]:1}"; do hermes cron remove "$job" >/dev/null || true; done
+      if [ ${#audit_jobs[@]} -gt 0 ]; then
+        # A schedule passed to Hermes recomputes the due time from now, so a night missed while the
+        # container was down would never catch up: it is passed only when AUDIT_TIME changed.
+        audit_reschedule=()
+        [ "$audit_scheduled" = "$audit_schedule" ] || audit_reschedule=(--schedule "$audit_schedule")
+        hermes cron edit "${audit_jobs[0]}" "${audit_args[@]}" "${audit_reschedule[@]}" --prompt "$audit_prompt" >/dev/null
+      else
+        hermes cron create "${audit_args[@]}" "$audit_schedule" "$audit_prompt" >/dev/null
+      fi && echo "pm-bot: composer-audit at $audit_schedule (${TZ:-UTC})" \
+        || echo "pm-bot: cannot register the composer-audit cron job; the nightly audit does not run" >&2
+    fi ;;
 esac
 
 if [ "$mode" = check ]; then

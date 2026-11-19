@@ -57,8 +57,8 @@ known_plugin_toolsets:
   slack:
     - bot-channels-cron
 
-# The cron job's shell. It starts in the read-only clone and needs only the two commands of
-# its skill's script, which take no variable. The deny globs keep the run's own commands away
+# The cron job's shell. It starts in the read-only clone and needs only its skill's commands
+# (cat, date, find, grep, composer audit), none of which takes a variable. The deny globs keep the run's own commands away
 # from the env, the env file and the web; they slow a misled run down and are no sandbox
 # (README.md › Security). An unattended run has nobody to approve a dangerous command,
 # so it is refused at once.

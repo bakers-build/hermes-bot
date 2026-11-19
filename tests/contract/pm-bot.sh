@@ -28,6 +28,8 @@
 #   - every user in the allowed channels is served unless an allowlist is set
 #   - poller, client and plugin call no LLM, except the plugin's language.py, which only takes
 #     back a validated language code; the persona answers in the language the trusted line names
+#   - Hermes posts no interim assistant message in Slack: the model's text beside its tool
+#     calls stays out of the channel
 #   - the Slack app neither reads nor opens direct messages, may manage public channels,
 #     may react to messages and may read the requester's e-mail address
 #   - the reviewer comes only from the trusted line's e-mail address; no assignee is passed
@@ -93,6 +95,10 @@ need(slack.get("reply_in_thread") is False, "slack.reply_in_thread is not false:
 need((cfg.get("plugins") or {}).get("enabled") == ["bot-channels"], "plugins.enabled is not exactly [bot-channels]")
 for key in ("allow_admin_from", "group_allow_admin_from"):
     need(slack.get(key) == "${SLACK_ADMIN_USERS}", f"slack.{key} does not limit slash commands to SLACK_ADMIN_USERS")
+# The model's text beside its tool calls is a working note, not an answer: it stays out of Slack.
+slack_display = (((cfg.get("display") or {}).get("platforms") or {}).get("slack") or {})
+need(slack_display.get("interim_assistant_messages") is False,
+     "display.platforms.slack.interim_assistant_messages is not false: the agent's working notes reach the channel")
 
 servers = cfg.get("mcp_servers") or {}
 need(set(servers) == {"clone-reader", "bakers"}, f"mcp_servers are {sorted(servers)}, not clone-reader and bakers")

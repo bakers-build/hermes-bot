@@ -7,7 +7,8 @@
 #
 # Variables run.sh sets: PM_BOT_IMAGE, PM_BOT_DATA, PM_BOT_CLONE, PM_BOT_UID, PM_BOT_GID (the
 # production file's), BAKERS_VERSION, E2E_AGENT (the stub's script directory), E2E_CONDUCTOR (the
-# conductor's home), E2E_CONDUCTOR_AGENT (stub or claude). Relative paths are the repository root's,
+# conductor's home), E2E_CONDUCTOR_AGENT (stub or claude), E2E_SITE_HOST (the site's host name,
+# default nginx; the ddev project's in .ddev/). Relative paths are the repository root's,
 # as compose resolves them against the first file.
 
 x-bakers-app: &bakers-app
@@ -32,8 +33,8 @@ x-bakers-env: &bakers-env
   DB_PASSWORD: e2e-db
   DB_DRIVER: mysql
   DB_PORT: "3306"
-  # The bot, the conductor and the test reach the site as http://nginx.
-  DOMAIN: nginx
+  # The one host name the site answers to: nginx, or the ddev project's (.ddev/e2e-site.yaml).
+  DOMAIN: ${E2E_SITE_HOST:-nginx}
   DRUPAL_HASH_SALT: e2e-hash-salt-not-a-secret-0000000000000000
   TRUSTED_PROXY_SUBNET: ""
   # Nothing is mailed: the site refuses to start without an SMTP URL, and none listens there.
@@ -125,6 +126,7 @@ services:
     user: ${PM_BOT_UID}:${PM_BOT_GID}
     environment:
       HOME: /home/conductor
+      BAKERS_URL: http://${E2E_SITE_HOST:-nginx}
       # The executor's run logs, beside the login in the conductor's home.
       E2E_LOG_DIR: /home/conductor/log
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}

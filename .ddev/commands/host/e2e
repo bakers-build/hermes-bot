@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+## Description: The PM bot's end-to-end stack: talk to the bot, follow Slack, let the stub agent ask, log in
+## Usage: e2e up|chat|slack|login|agent <ticket> <script>
+## Example: "ddev e2e up" (the first start) or "ddev e2e chat" or "ddev e2e agent E2E-1 question"
+# `up` is the ddev start of run.sh (ddev-up), not its own compose stack.
+[ "${1:-}" = up ] && set -- ddev-up "${@:2}"
+exec env E2E_DDEV=1 "$DDEV_APPROOT/tests/e2e/run.sh" "$@"

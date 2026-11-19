@@ -18,7 +18,12 @@
 #   tests/e2e/run.sh slack                 follow the Slack calls the poller makes
 #   tests/e2e/run.sh agent <ticket> <script>   the stub agent's next run on <ticket> plays
 #                                          tests/e2e/agent/<script>.json (question, technical-problem, …)
+#   tests/e2e/run.sh login                 print a login link per seeded account
 #   tests/e2e/run.sh down                  remove the stack and its volumes
+#
+# In the ddev project (.ddev/), `ddev e2e up` (later also `ddev start`) runs the same stack: it and
+# ddev's hooks call `ddev-check` and `ddev-seed` here, and `ddev e2e <subcommand>` runs chat, slack,
+# agent and login with E2E_DDEV=1.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -27,6 +32,13 @@ OUT="$E2E/out"
 PROJECT=pm-bot-e2e
 COMPOSE=(-p "$PROJECT" -f "$ROOT/compose.yaml" -f "$E2E/compose.yaml")
 STATE="$OUT/stack.env"
+# The site's one host name: nginx here, the ddev project's under ddev.
+SITE_HOST=nginx
+if [ "${E2E_DDEV:-}" = 1 ]; then
+  # ddev's own merge of .ddev/docker-compose.e2e.yaml, every variable filled.
+  COMPOSE=(-p ddev-hermes-bot -f "$ROOT/.ddev/.ddev-docker-compose-full.yaml")
+  SITE_HOST=hermes-bot.ddev.site
+fi
 
 say() { echo "e2e: $*" >&2; }
 die() { echo "e2e: $*" >&2; exit 1; }
@@ -39,10 +51,10 @@ export_stack() {
     E2E_AGENT="$OUT/agent" E2E_CONDUCTOR="$OUT/conductor" E2E_CONDUCTOR_AGENT="$2" BAKERS_VERSION="${BAKERS_VERSION:-0.11.0}"
 }
 load_stack() {
-  [ -f "$STATE" ] || die "no stack; start one with tests/e2e/run.sh up"
+  [ -f "$STATE" ] || die "no stack; start one with tests/e2e/run.sh up (or ddev start)"
   # shellcheck disable=SC1090
   source "$STATE"
-  export_stack "$IMAGE" "$AGENT"
+  [ "${E2E_DDEV:-}" = 1 ] || export_stack "$IMAGE" "$AGENT"
 }
 
 # The working copy's image, built as CI builds it.
@@ -56,11 +68,61 @@ build_image() {
   echo "$tag"
 }
 
-# A request on the site from the host: it answers only to Host nginx.
+# A request on the site from the host: it answers only to its one host name.
 site_up() {
   local port
   port="$(dc port nginx 80 2>/dev/null | sed 's/.*://')" || return 1
-  [ -n "$port" ] && curl -fsS -o /dev/null -H 'Host: nginx' "http://127.0.0.1:$port/user/login"
+  [ -n "$port" ] && curl -fsS -o /dev/null -H "Host: $SITE_HOST" "http://127.0.0.1:$port/user/login"
+}
+
+# seed <scripted|real>: wait for the site, seed it, and write the bot's env file and the
+# conductor's seed. Each step returns on failure: callers run it in `||` lists, without errexit.
+seed() {
+  local mode="$1" tries=0
+  until site_up; do
+    tries=$((tries + 1))
+    [ "$tries" -lt 150 ] || { say "the site did not answer within 5 minutes"; return 1; }
+    sleep 2
+  done
+  say "seeding the site"
+  dc exec -T php /var/www/html/vendor/bin/drush php:script /e2e/seed.php >"$OUT/seed.json" || return
+  local key token base
+  key="${ANTHROPIC_API_KEY:-}" token="${CLAUDE_CODE_OAUTH_TOKEN:-}" base=http://model/anthropic
+  if [ "$mode" = scripted ]; then key=e2e-scripted token= ; else base=https://api.anthropic.com; fi
+  node - "$E2E/pm-bot.env" "$OUT/seed.json" "$OUT/data/.env" "$base" "$key" "$token" "http://$SITE_HOST" <<'NODE'
+const fs = require('node:fs');
+const [template, seedFile, target, base, key, token, site] = process.argv.slice(2);
+const seed = JSON.parse(fs.readFileSync(seedFile, 'utf8'));
+const values = {
+  PM_BOT_MODEL_BASE_URL: base, ANTHROPIC_API_KEY: key, CLAUDE_CODE_OAUTH_TOKEN: token, BAKERS_URL: site,
+  BAKERS_API_KEY: seed.bot_api_key, PM_BOT_PROJECT: seed.project_uuid, PM_BOT_CONDUCTOR: seed.conductor_uuid,
+};
+const text = fs.readFileSync(template, 'utf8').replace(/^(\w+)=@(\w+)@$/gm, (_, key, name) => {
+  if (!(name in values)) throw new Error(`pm-bot.env fills ${key} from ${name}, which run.sh does not know`);
+  return `${key}=${values[name]}`;
+});
+fs.writeFileSync(target, text, { mode: 0o600 });
+NODE
+  [ $? = 0 ] || return 1
+  cp "$OUT/seed.json" "$OUT/conductor/seed.json" || return
+}
+
+# A one-time login link per seeded account, on the site's address as the browser reaches it.
+logins() {
+  local uri="$1" who name
+  for who in owner requester; do
+    name="$(node -p "require('$OUT/seed.json').${who}_user_name")"
+    echo "Login as $who ($name): $(dc exec -T php /var/www/html/vendor/bin/drush user:login --name="$name" --uri="$uri")"
+  done
+}
+
+# The site's address in the browser.
+site_url() {
+  if [ "${E2E_DDEV:-}" = 1 ]; then
+    echo "https://$SITE_HOST:33443"
+  else
+    echo "http://nginx:$(dc port nginx 80 | sed 's/.*://')"
+  fi
 }
 
 # start <image> <scripted|real> <stub|claude>: the bot's model and the conductor's agent. Each step
@@ -77,34 +139,7 @@ start() {
 
   say "starting the site (bakers.build $BAKERS_VERSION), the model and the Slack recorder"
   dc up -d nginx model slack-recorder >&2 || return
-  local tries=0
-  until site_up; do
-    tries=$((tries + 1))
-    [ "$tries" -lt 150 ] || { say "the site did not answer within 5 minutes"; return 1; }
-    sleep 2
-  done
-
-  say "seeding the site"
-  dc exec -T php /var/www/html/vendor/bin/drush php:script /e2e/seed.php >"$OUT/seed.json" || return
-  local key token base
-  key="${ANTHROPIC_API_KEY:-}" token="${CLAUDE_CODE_OAUTH_TOKEN:-}" base=http://model/anthropic
-  if [ "$mode" = scripted ]; then key=e2e-scripted token= ; else base=https://api.anthropic.com; fi
-  node - "$E2E/pm-bot.env" "$OUT/seed.json" "$OUT/data/.env" "$base" "$key" "$token" <<'NODE'
-const fs = require('node:fs');
-const [template, seedFile, target, base, key, token] = process.argv.slice(2);
-const seed = JSON.parse(fs.readFileSync(seedFile, 'utf8'));
-const values = {
-  PM_BOT_MODEL_BASE_URL: base, ANTHROPIC_API_KEY: key, CLAUDE_CODE_OAUTH_TOKEN: token,
-  BAKERS_API_KEY: seed.bot_api_key, PM_BOT_PROJECT: seed.project_uuid, PM_BOT_CONDUCTOR: seed.conductor_uuid,
-};
-const text = fs.readFileSync(template, 'utf8').replace(/^(\w+)=@(\w+)@$/gm, (_, key, name) => {
-  if (!(name in values)) throw new Error(`pm-bot.env fills ${key} from ${name}, which run.sh does not know`);
-  return `${key}=${values[name]}`;
-});
-fs.writeFileSync(target, text, { mode: 0o600 });
-NODE
-  [ $? = 0 ] || return 1
-  cp "$OUT/seed.json" "$OUT/conductor/seed.json" || return
+  seed "$mode" || return
 
   say "starting the bot (mode agent) and the conductor"
   dc up -d --build pm-bot conductor >&2
@@ -172,32 +207,68 @@ case "${1:-}" in
     agent=stub
     [ "$real" = 1 ] && agent=claude
     start "$image" real "$agent"
-    port="$(dc port nginx 80 | sed 's/.*://')"
     # The site answers only to the host name nginx.
-    echo "Site: http://nginx:$port (add '127.0.0.1 nginx' to /etc/hosts once)"
-    for who in owner requester; do
-      name="$(node -p "require('$OUT/seed.json').${who}_user_name ?? ''")"
-      [ -n "$name" ] || name="e2e-$who"
-      link="$(dc exec -T php /var/www/html/vendor/bin/drush user:login --name="$name" --uri="http://nginx:$port")"
-      echo "Login as $who ($name): $link"
-    done
-    echo "Next: tests/e2e/run.sh chat | slack | agent <ticket> <script> | down"
+    echo "Site: $(site_url) (add '127.0.0.1 nginx' to /etc/hosts once)"
+    logins "$(site_url)"
+    echo "Next: tests/e2e/run.sh chat | slack | agent <ticket> <script> | login | down"
+    ;;
+  login)
+    load_stack
+    echo "Site: $(site_url)"
+    logins "$(site_url)"
+    ;;
+  ddev-up)
+    # `ddev e2e up`: what ddev needs before it can read the stack, then `ddev start`. ddev reads the
+    # compose files, the bot's env file among them, before its first hook runs.
+    "$0" ddev-check
+    exec ddev start
+    ;;
+  ddev-check)
+    # `ddev e2e up` and ddev's pre-start hook: the model key, the bot's image, the run directory.
+    if [ -f "$ROOT/.ddev/.env.e2e" ]; then set -a; . "$ROOT/.ddev/.env.e2e"; set +a; fi
+    [ -n "${ANTHROPIC_API_KEY:-}${CLAUDE_CODE_OAUTH_TOKEN:-}" ] \
+      || die "the ddev stack needs a model key: put ANTHROPIC_API_KEY=… or CLAUDE_CODE_OAUTH_TOKEN=… into .ddev/.env.e2e"
+    image="$(sed -n 's/^PM_BOT_IMAGE=//p' "$ROOT/.ddev/e2e.env")"
+    docker image inspect "$image" >/dev/null 2>&1 || [ "$(build_image)" = "$image" ] || die "could not build $image"
+    mkdir -p "$OUT/data" "$OUT/clone" "$OUT/agent" "$OUT/conductor"
+    [ -f "$OUT/clone/README.md" ] || cp "$ROOT/README.md" "$OUT/clone/"
+    # Compose needs the bot's env file to exist; ddev-seed writes it.
+    [ -f "$OUT/data/.env" ] || : >"$OUT/data/.env"
+    ;;
+  ddev-seed)
+    # ddev's post-start hook: seed the site, then start the bot and the conductor on it.
+    [ "${E2E_DDEV:-}" = 1 ] || die "ddev-seed runs in ddev's post-start hook"
+    set -a; . "$ROOT/.ddev/.env.e2e"; set +a
+    agent="$(sed -n 's/^E2E_CONDUCTOR_AGENT=//p' "$ROOT/.ddev/e2e.env")"
+    printf 'IMAGE=%q\nAGENT=%q\nMODE=real\n' "$(sed -n 's/^PM_BOT_IMAGE=//p' "$ROOT/.ddev/e2e.env")" "$agent" >"$STATE"
+    seed real || die "seeding the site failed"
+    # Claude Code's key, should the conductor run it (E2E_CONDUCTOR_AGENT=claude in .ddev/e2e.env).
+    (umask 077 && grep -E '^(ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN)=' "$ROOT/.ddev/.env.e2e" >"$OUT/conductor/model.env")
+    # ddev's merged file holds the bot's env file as it was at ddev's start; merge again with the
+    # keys just written.
+    (umask 077 && ddev debug compose-config >"$OUT/ddev-compose.yaml") || die "ddev debug compose-config failed"
+    docker compose -p ddev-hermes-bot -f "$OUT/ddev-compose.yaml" --profile seeded up -d --build --force-recreate pm-bot conductor >&2
+    echo "Site: $(site_url)"
+    logins "$(site_url)"
+    echo "Next: ddev e2e chat | slack | agent <ticket> <script> | login"
     ;;
   chat)
     load_stack
     [ "$MODE" = real ] || die "chat needs a stack started with a model key (tests/e2e/run.sh up)"
-    # The hand-test's request channel, recorded as the bot-channels plugin records the channels it
+    # A fresh request channel per chat, recorded as the bot-channels plugin records the channels it
     # opens, so the poller renames, archives and reopens it.
-    channel=C0HAND00001
     email="$(node -p "require('$OUT/seed.json').requester_email")"
-    node -e '
+    channel="$(node -e '
       const fs = require("node:fs");
-      const [file, channel, email] = process.argv.slice(1);
+      const [file, email] = process.argv.slice(1);
       let bot = {};
       try { bot = JSON.parse(fs.readFileSync(file, "utf8")); } catch {}
-      bot[channel] ??= { name: "req-hand-test", requester: "U0E2EREQ", created: new Date().toISOString(), requester_email: email };
+      const n = Object.keys(bot).filter((id) => id.startsWith("C0HAND")).length + 1;
+      const channel = `C0HAND${String(n).padStart(5, "0")}`;
+      bot[channel] = { name: `req-hand-test-${n}`, requester: "U0E2EREQ", created: new Date().toISOString(), requester_email: email };
       fs.writeFileSync(file, JSON.stringify(bot, null, 2));
-    ' "$OUT/data/bot-channels.json" "$channel" "$email"
+      console.log(channel);
+    ' "$OUT/data/bot-channels.json" "$email")"
     cat <<TEXT
 Hermes adds no Slack context here: start with the channel's trusted line and the requester's
 prefix, as the gateway and the bot-channels plugin would, for example:

@@ -8,11 +8,12 @@ It runs as one container from the image this folder builds, started with [`compo
 
 | Part | What it is |
 |---|---|
-| `Dockerfile` | The bot's image: the official Hermes image at v0.22.5, pinned by digest, with this folder's content in `/opt/pm-bot` and the shipped skills in `/opt/pm-bot/skills` |
+| `Dockerfile` | The bot's image: the official Hermes image at v0.22.5, pinned by digest, with this folder's content in `/opt/pm-bot`, the shipped skills in `/opt/pm-bot/skills`, and `php-cli` with Composer 2 (pinned by digest) for the nightly audit |
 | `build/collect-skills.mjs` | At build time, copies `bb-create-ticket`, `bb-recipe-superpowers` and `bb-recipe-matt` with every bundle file their links reach; refuses a link that leaves the bundle, reaches another skill or is broken |
 | `entrypoint.sh` | The container's start, as the `hermes` user: checks the env, renders the configuration, puts the persona and the shipped skills into Hermes' home, runs the poller and the gateway |
 | `render.mjs` | Fills the `${…}` placeholders of the configuration and the persona from the env; refuses an unset value or one that could change the YAML |
 | `config.template.yaml` | Hermes configuration: Slack, toolsets, approvals, the `clone-reader` MCP server and bakers.build's `/mcp` as the `bakers` server |
+| `skills/composer-audit/` | The bot's own skill for the nightly Composer audit: `SKILL.md` (the decisions and ticket writes) and `audit.mjs` (marker gate, `composer audit`, comparison with the last night, state) |
 | `SOUL.template.md` | The persona, rendered into `SOUL.md`: the host context `bb-create-ticket` takes (project, workflow, conductor, the requester from Hermes' sender prefix, the channel's link), status answers and passing answers back |
 | `plugins/bot-channels/` | A Hermes plugin: turns a mention in the main channel into a request channel, admits only the bot's own open channels, tells the model each channel's ID, link and ticket, and sets the bot's language (`language.py`, the plugin's texts in `messages.json`) |
 | `poller/` | Posts state changes, status updates between them and open questions into each ticket's channel; renames, archives and reopens the bot's channels; no LLM |
@@ -20,7 +21,7 @@ It runs as one container from the image this folder builds, started with [`compo
 | `slack-app-manifest.yaml` | The Slack app, created in one step |
 | `.env.example` | The keys the container reads from its env file, which the Coder template writes |
 
-The bot's reach is limited by its tools and its container. It has no terminal, file, browser or web toolset; a filesystem MCP server that sees only a read-only, secret-free clone of the project's code; and eight of bakers.build's own tools (`bakers_ticket_create`, `bakers_ticket_read`, `bakers_ticket_search`, `bakers_ticket_update`, `bakers_ticket_transition`, `bakers_ticket_classify`, `bakers_comment_create` and `bakers_user_read`), with the rights of its service account. They serve exactly the steps of `bb-create-ticket`, status reads and the answer path. Make that account a member of the bot's project's team only: the bot acts on its project, and the account's membership is what bakers.build enforces. The container sees only Hermes' home and that clone, has no Docker socket and runs with almost every capability dropped.
+The bot's reach is limited by its tools and its container. In Slack it has no terminal, file, browser or web toolset; only the nightly `composer-audit` cron job has a shell (*The nightly Composer audit* below); a filesystem MCP server that sees only a read-only, secret-free clone of the project's code; and nine of bakers.build's own tools (`bakers_ticket_create`, `bakers_ticket_read`, `bakers_ticket_search`, `bakers_ticket_update`, `bakers_ticket_transition`, `bakers_ticket_classify`, `bakers_comment_create`, `bakers_user_read` and `bakers_conductor_list`), with the rights of its service account. They serve exactly the steps of `bb-create-ticket`, status reads, the answer path and the nightly audit. Make that account a member of the bot's project's team only: the bot acts on its project, and the account's membership is what bakers.build enforces. The container sees only Hermes' home and that clone, has no Docker socket and runs with almost every capability dropped.
 
 ## How it works
 
@@ -41,6 +42,18 @@ The bot's reach is limited by its tools and its container. It has no terminal, f
 - **Redeploys need no restart.** While bakers.build is down, a tool call fails: a poller pass fails and keeps its state file, and the next pass catches up and posts nothing twice; Hermes reconnects on its own. Hermes talks to Slack over Socket Mode, which does not depend on bakers.build.
 - **It needs a bakers.build with API keys as bearer, the project ticket list tool, `bakers_user_read` and `labels_remove`** on `bakers_ticket_update`, and the service user's position and background set on its profile (the template's README › PM bot › The bot's service account).
 
+## The nightly Composer audit
+
+Every night the bot audits the project's Composer dependencies on a freshly pulled clone and opens a ticket when there is something to update.
+
+- **When.** Hermes' cron scheduler, inside the gateway, runs the job `composer-audit` at `AUDIT_TIME` (default `03:30`) in the container's time zone `TZ` (default UTC). `entrypoint.sh` registers it by name on every start, so a restart keeps exactly one job; a night the container was down is caught up when it starts within two hours. `hermes cron list` in the container shows it.
+- **Only after a pull.** The box pulls the clone at night and writes `/opt/data/clone-pulled.json` (`{ "at", "head", "ok", "error" }`; the workspace template's job, keytec/infra). The audit runs only on a marker with `ok: true` newer than the last audit's; otherwise the run's output under `/opt/data/cron/output/` says why, and nothing is posted. Until the template writes the marker, every night skips with *no pull marker*.
+- **What it checks.** Every `composer.lock` with a `composer.json` beside it, outside `.git/`, `vendor/` and `node_modules/`, with `composer audit --locked --format=json --no-plugins --no-scripts --abandoned=ignore` in its directory: the installed versions against Packagist's security advisories, without installing anything or running the project's plugins or scripts. Abandoned packages are not reported.
+- **What it writes.** `/opt/data/audit-state.json` holds, per advisory ID, the lock file, package, installed version, affected range, fixed-in version, severity, CVE, link and the night it was first seen, plus the last audited marker, the audit time and the open audit ticket. A failed `composer audit` writes nothing and is the run's message in the main channel.
+- **The ticket.** New advisories without an open audit ticket create one `chore` in the bot's project, labelled `security`, titled `Security updates: <n> Composer advisories (<packages>)`, with a table per lock file and its `composer update <packages> --with-dependencies` line. Its conductor is the project's only active conductor; with none or several, none is set and the run's message says so. It gets a request channel like a request from Slack, without a requester, and the run posts one line linking both into the main channel. While that ticket is open, new advisories and advisories fixed in the clone become one comment on it; an unchanged night stays silent. Once it is `done` or `cancelled`, the next finding opens a new ticket.
+- **The shell.** The job's agent gets the toolsets `terminal`, `skills`, `mcp-bakers` and the plugin's `bot-channels-cron`; Slack's toolsets do not change. Its shell starts in the clone and runs the skill's script. `approvals.deny` in `config.yaml` refuses commands that read the env or the env file (`env`, `printenv`, `.env`, `environ`, any `$` expansion) or reach the web with `curl` or `wget`, and `approvals.cron_mode: deny` refuses every other dangerous command at once. These globs slow a misled run down; they are no sandbox: a shell in the container can still reach `/opt/data/.env`. The skill and its script come from the image, and the job reads no instructions from the clone.
+- **Switch it off.** Set `AUDIT_ENABLED=false` in the env file (workspace parameter) and restart: the start removes the job and logs one line. `AUDIT_ENABLED`, `AUDIT_TIME` and `TZ` are read on every start.
+
 ## The conductor
 
 The bot creates its tickets with the conductor `PM_BOT_CONDUCTOR` names; that conductor runs the work, wherever its machine is. It runs each agent run in a container of its own through `@bakers-build/addon-runtime-docker`, so the agent may work at `permissions: 'yolo'` inside it. Its machine configuration ([Machine](https://bakers.build/configuration/machine)) lists the two addons:
@@ -60,7 +73,7 @@ The bot's own container stays as it is: no Docker socket, no `.bakers.env`, and 
 ## Develop
 
 ```sh
-node --test '**/*.test.mjs'     # poller, client and render, against stubs
+node --test '**/*.test.mjs'     # poller, client, render and the audit script, against stubs
 python3 -m unittest discover -s plugins/bot-channels   # the plugin's pure core
 bash tests/contract/pm-bot.sh          # lock-down of the configuration, the persona, the plugin, the build lines, the Slack app and the compose file
 bash tests/contract/pm-bot-image.sh    # builds the image; check mode (plugin loaded, its Hermes seams, /mcp stub), the plugin's recovery test on Hermes, then run mode (Docker)
@@ -112,6 +125,9 @@ The bot keeps no memory and writes no skill without you. Review its proposals in
 | No `eyes` on messages in a request channel | The Slack app lacks `reactions:write` (Hermes logs the failed `reactions.add` at debug level only): add the scope, reinstall the app |
 | The bot does not answer in a channel | It answers only in its main channel and the request channels it opened and has not archived; a channel it was merely invited to stays silent |
 | `bot-channels: language: …` in the container log, the bot German although `background` names another language | The read of `background` or the model call failed at start; fix what the line names, then `docker compose -p pm-bot restart` |
+| The nightly audit posts nothing; the job's output under `/opt/data/cron/output/` says *no pull marker* or *no pull since the last audit* | The box did not pull the clone that night: check the workspace template's nightly pull and `/opt/data/clone-pulled.json` |
+| `Composer audit failed: …` in the main channel | `composer audit` could not read a lock file or reach Packagist; the state is unchanged and the next night tries again |
+| `pm-bot: AUDIT_TIME must be HH:MM` | `AUDIT_TIME` is not a time like `03:30` |
 | `pm-bot: missing: …` and the container restarting | The env file lacks a required key; check the workspace's skip line and parameters |
 | `pm-bot: SLACK_ALLOWED_CHANNELS must name exactly one channel` | `pm_bot_slack_allowed_channels` lists more than one channel; the bot has one main channel |
 | `render …: … may hold only …` | A parameter holds a character the configuration cannot take safely |

@@ -43,13 +43,56 @@ platform_toolsets:
     - session_search
     - mcp-clone-reader
     - mcp-bakers
+  # The nightly composer-audit job (entrypoint.sh registers it; its skill is skills/composer-audit):
+  # a shell in the clone for `composer audit`, the bakers tools for the ticket, and the plugin's
+  # tool that opens the ticket's channel. Only cron gets these; Slack keeps the list above.
+  cron:
+    - terminal
+    - skills
+    - mcp-bakers
+    - bot-channels-cron
+# Hermes enables a plugin's toolset on every platform unless the platform lists it here and
+# leaves it out of its own list: Slack does not get the cron job's channel tool.
+known_plugin_toolsets:
+  slack:
+    - bot-channels-cron
+
+# The cron job's shell. It starts in the read-only clone and needs only the two commands of
+# its skill's script, which take no variable. The deny globs keep the run's own commands away
+# from the env, the env file and the web; they slow a misled run down and are no sandbox
+# (README.md › Security). An unattended run has nobody to approve a dangerous command,
+# so it is refused at once.
+terminal:
+  cwd: ${PM_BOT_CLONE_DIR}
+approvals:
+  cron_mode: deny
+  deny:
+    - "*.env*"
+    - "env"
+    - "env *"
+    - "*printenv*"
+    - "*environ*"
+    - "export"
+    - "export *"
+    - "set"
+    - "declare *"
+    - "*$*"
+    - "*curl*"
+    - "*wget*"
+
+# The cron job's answer goes into the main channel as written: one line, or nothing on
+# [SILENT]. A night the container was down catches up when it starts within two hours.
+cron:
+  wrap_response: false
+  catch_up_missed: true
 
 agent:
   # Every toolset that can change the system or reach beyond bakers.build's tools and
   # the read-only clone. Code access goes through the clone-reader MCP server instead
-  # of the file toolset, which cannot be limited to one directory.
+  # of the file toolset, which cannot be limited to one directory. The terminal is not
+  # listed: Hermes applies this list to cron runs too, and only platform_toolsets.cron
+  # names it.
   disabled_toolsets:
-    - terminal
     - code_execution
     - browser
     - web
@@ -96,7 +139,8 @@ mcp_servers:
   # bakers.build: its own MCP endpoint, the bot's only way in. The service account's API
   # key is the bearer; Hermes fills ${env:BAKERS_API_KEY} from $HERMES_HOME/.env, and the
   # entrypoint's render leaves that form alone, so the key never lands in this file.
-  # Exactly the eight tools bb-create-ticket, the status reads and the answer path call.
+  # Exactly the nine tools bb-create-ticket, the status reads, the answer path and the
+  # nightly audit (bakers_conductor_list) call.
   bakers:
     url: ${BAKERS_URL}/mcp
     headers:
@@ -111,5 +155,6 @@ mcp_servers:
         - tool_api__bakers_ticket_update
         - tool_api__bakers_ticket_transition
         - tool_api__bakers_comment_create
+        - tool_api__bakers_conductor_list
         - tool_api__bakers_ticket_classify
         - tool_api__bakers_user_read

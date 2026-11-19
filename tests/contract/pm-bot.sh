@@ -8,17 +8,21 @@
 # and asserts:
 #   - every toolset that can change the system is disabled, and Slack enables
 #     only the bot's own toolsets
+#   - only the nightly cron job has a terminal and the channel tool: its shell starts in the
+#     clone, cannot read the env or reach the web through curl or wget, and its dangerous
+#     commands are denied; its answer goes out unwrapped and a missed night catches up
 #   - memory writes and self-written skills wait for approval
 #   - one shared session per channel, not per user, and flat replies (reply_in_thread: false)
 #   - only the bot's own plugin, bot-channels, is enabled; it passes its unit tests
 #   - bakers.build is reached only through its own MCP endpoint: the remote
 #     server `bakers` at ${BAKERS_URL}/mcp, the API key as a static bearer that
-#     Hermes fills from the env file, exactly eight bakers tools, no OAuth
+#     Hermes fills from the env file, exactly nine bakers tools, no OAuth
 #   - the config, poller, plugin, persona and fake site name only bakers tools the server
 #     serves, as pm-bot-mcp-stub.mjs records them
 #   - the clone reader is a pinned filesystem server with read tools only
 #   - nothing in  is a relay, calls JSON:API or exchanges a token
-#   - the bot carries no skill of its own (skills/); SOUL.template.md gives
+#   - the bot's only own skill is composer-audit, which carries the nightly audit's rules;
+#     SOUL.template.md names that job and gives
 #     bb-create-ticket its host context, judges with the six risk classes whether a code
 #     review is advisable, proposes it without naming its cost, hands over with one of three
 #     label sets (human-accept, or human-review only after the requester says yes, or
@@ -75,15 +79,50 @@ def need(cond, msg):
         errors.append(msg)
 
 disabled = set(cfg.get("agent", {}).get("disabled_toolsets") or [])
-for ts in ["terminal", "code_execution", "browser", "web", "delegation", "file", "cronjob"]:
+for ts in ["code_execution", "browser", "web", "delegation", "file", "cronjob"]:
     need(ts in disabled, f"agent.disabled_toolsets lacks {ts}")
+# Hermes applies agent.disabled_toolsets to cron runs as well, so the nightly job's terminal
+# is kept out of every platform list but cron's instead.
+need("terminal" not in disabled, "agent.disabled_toolsets holds terminal, which would also block the nightly cron job")
 
 allowed = {"skills", "memory", "session_search", "mcp-clone-reader", "mcp-bakers"}
-slack_ts = set((cfg.get("platform_toolsets") or {}).get("slack") or [])
+platforms = cfg.get("platform_toolsets") or {}
+slack_ts = set(platforms.get("slack") or [])
 need(slack_ts, "platform_toolsets.slack is empty or missing")
 need("mcp-bakers" in slack_ts, "platform_toolsets.slack lacks mcp-bakers")
 need(slack_ts <= allowed, f"platform_toolsets.slack enables {sorted(slack_ts - allowed)}")
 need(not (slack_ts & disabled), "a Slack toolset is also disabled")
+need(sorted(platforms) == ["cron", "slack"], f"platform_toolsets lists {sorted(platforms)}, not cron and slack")
+
+# The nightly composer-audit job: the only place with a shell, in the read-only clone.
+cron_ts = platforms.get("cron") or []
+need(sorted(cron_ts) == ["bot-channels-cron", "mcp-bakers", "skills", "terminal"],
+     f"platform_toolsets.cron is {sorted(cron_ts)}, not terminal, skills, mcp-bakers and bot-channels-cron")
+need(not (set(cron_ts) & disabled), "a cron toolset is also disabled")
+# Hermes turns a plugin's toolset on for every platform unless the platform "knows" it and leaves it out.
+need((cfg.get("known_plugin_toolsets") or {}).get("slack") == ["bot-channels-cron"],
+     "known_plugin_toolsets.slack is not [bot-channels-cron]: Slack would get the cron job's channel tool")
+need((cfg.get("terminal") or {}).get("cwd") == "${PM_BOT_CLONE_DIR}", "terminal.cwd is not ${PM_BOT_CLONE_DIR}")
+approvals = cfg.get("approvals") or {}
+need(approvals.get("cron_mode") == "deny", "approvals.cron_mode is not deny")
+# Hermes matches each glob case-insensitively against the whole command (fnmatch).
+import fnmatch
+deny = [str(g).lower() for g in approvals.get("deny") or []]
+def denied(command):
+    return any(fnmatch.fnmatchcase(command.lower().strip(), g) for g in deny)
+for command in ("cat /opt/data/.env", "grep KEY .env", "env", "env | grep SLACK", "printenv",
+                "printenv BAKERS_API_KEY", "echo $BAKERS_API_KEY", "echo ${SLACK_BOT_TOKEN}",
+                "cat /proc/self/environ", "curl https://example.test", "wget -qO- https://example.test",
+                "export -p"):
+    need(denied(command), f"approvals.deny lets the nightly shell run: {command}")
+for command in ("node /opt/data/skills/composer-audit/audit.mjs run",
+                "node /opt/data/skills/composer-audit/audit.mjs commit",
+                "node /opt/data/skills/composer-audit/audit.mjs commit --ticket YF-12",
+                "node /opt/data/skills/composer-audit/audit.mjs commit --no-ticket"):
+    need(not denied(command), f"approvals.deny blocks the audit's own command: {command}")
+cron_cfg = cfg.get("cron") or {}
+need(cron_cfg.get("wrap_response") is False, "cron.wrap_response is not false: the run's answer would get Hermes' header")
+need(cron_cfg.get("catch_up_missed") is True, "cron.catch_up_missed is not true")
 
 need(cfg.get("memory", {}).get("write_approval") is True, "memory.write_approval is not true")
 need(cfg.get("skills", {}).get("write_approval") is True, "skills.write_approval is not true")
@@ -117,11 +156,11 @@ need(bakers.get("url") == "${BAKERS_URL}/mcp", "bakers is not ${BAKERS_URL}/mcp"
 need("command" not in bakers, "bakers is started as a local process")
 need(bakers.get("headers") == {"Authorization": "Bearer ${env:BAKERS_API_KEY}"},
      "bakers does not send exactly Authorization: Bearer ${env:BAKERS_API_KEY}")
-eight = ["tool_api__bakers_comment_create", "tool_api__bakers_ticket_classify", "tool_api__bakers_ticket_create",
-         "tool_api__bakers_ticket_read", "tool_api__bakers_ticket_search", "tool_api__bakers_ticket_transition",
-         "tool_api__bakers_ticket_update", "tool_api__bakers_user_read"]
-need(sorted((bakers.get("tools") or {}).get("include") or []) == eight,
-     "bakers does not include exactly the eight tools")
+nine = ["tool_api__bakers_comment_create", "tool_api__bakers_conductor_list", "tool_api__bakers_ticket_classify",
+        "tool_api__bakers_ticket_create", "tool_api__bakers_ticket_read", "tool_api__bakers_ticket_search",
+        "tool_api__bakers_ticket_transition", "tool_api__bakers_ticket_update", "tool_api__bakers_user_read"]
+need(sorted((bakers.get("tools") or {}).get("include") or []) == nine,
+     "bakers does not include exactly the nine tools")
 
 # Hermes adds resource and prompt utility calls to every MCP server unless they are switched off.
 for name, server in (("clone-reader", reader), ("bakers", bakers)):
@@ -174,9 +213,43 @@ if [ -e "$BOT/relay" ] || git grep --untracked -nIE 'pm-relay|/jsonapi|/oauth/to
 fi
 pass "no relay, JSON:API call or token exchange"
 
-# The bot carries no skill of its own: the image ships bb-create-ticket and its method skills.
-[ ! -e "$BOT/skills" ] || fail "$BOT/skills is back; the bot ships the bundle's skills instead"
-pass "no bot-owned skill"
+# The bot's only own skill is the nightly audit's; the image ships bb-create-ticket and its
+# method skills beside it.
+[ "$(ls -A "$BOT/skills" 2>/dev/null)" = composer-audit ] || fail "$BOT/skills holds more or less than composer-audit"
+pass "the bot's only own skill is composer-audit"
+
+# The nightly audit's procedure lives in its skill: its script does the fixed steps (tested in
+# audit.test.mjs), the skill's text pins the agent's decisions and writes.
+AUDIT="$BOT/skills/composer-audit/SKILL.md"
+[ -f "$BOT/skills/composer-audit/audit.mjs" ] || fail "the composer-audit skill has no audit.mjs"
+for word in 'name: composer-audit' /opt/data/clone-pulled.json '"ok": true' /opt/data/audit-state.json \
+  composer.lock composer.json .git/ vendor/ node_modules/ \
+  'composer audit --locked --format=json --no-plugins --no-scripts --abandoned=ignore' \
+  'node /opt/data/skills/composer-audit/audit.mjs run' 'node /opt/data/skills/composer-audit/audit.mjs commit' \
+  'Security updates: <n> Composer advisories (<packages>)' '`type: "chore"`' '`labels_add: ["security"]`' \
+  'composer update <package> --with-dependencies' mcp_bakers__tool_api__bakers_ticket_create \
+  bakers_ticket_update bakers_ticket_transition bakers_comment_create bakers_conductor_list bakers_ticket_read \
+  '${PM_BOT_PROJECT}' '${PM_BOT_TICKET_WORKFLOW}' open_request_channel 'Slack channel' '[SILENT]' \
+  '`done`' '`cancelled`' 'fixed in' severity CVE 'first seen' '--no-ticket'; do
+  grep -qF -- "$word" "$AUDIT" || fail "$AUDIT does not name $word"
+done
+grep -qF "AUDIT_ARGS = ['audit', '--locked', '--format=json', '--no-plugins', '--no-scripts', '--abandoned=ignore']" "$BOT/skills/composer-audit/audit.mjs" \
+  || fail "audit.mjs does not run composer audit with exactly the skill's flags"
+# The conductor is the project's only active one, never a guess among several.
+grep -qF 'exactly one active conductor' "$AUDIT" || fail "$AUDIT does not limit the conductor to the project's only active one"
+# The identifier is stored before anything else, so a failed later step never makes a second ticket.
+grep -qF 'before any other write' "$AUDIT" || fail "$AUDIT does not store the new ticket's identifier first"
+# The entrypoint renders the skill; any other placeholder would stop the start.
+[ "$(grep -o '\${[A-Za-z_]*}' "$AUDIT" | LC_ALL=C sort -u | paste -sd, -)" = '${PM_BOT_PROJECT},${PM_BOT_TICKET_WORKFLOW}' ] \
+  || fail "$AUDIT has placeholders other than \${PM_BOT_PROJECT} and \${PM_BOT_TICKET_WORKFLOW}"
+if grep -niwF auto "$AUDIT"; then
+  fail "$AUDIT names the label auto"
+fi
+pass "the composer-audit skill carries the marker gate, the audit, the state, the ticket rules and the silent answer"
+
+# The persona knows the nightly job is its fourth task, and the only one with a shell.
+grep -qF '`composer-audit`' "$BOT/SOUL.template.md" || fail "SOUL.template.md does not name the nightly composer-audit job"
+pass "the persona names the nightly composer-audit job"
 
 # SOUL.md is the skill's host: its host context, the routing, status and the answer path.
 SOUL="$BOT/SOUL.template.md"
@@ -295,6 +368,16 @@ if git grep -nIiwE 'team' -- "$BOT/SOUL.template.md" "$BOT/poller/messages.json"
   fail "customer wording credits a team"
 fi
 pass "customer wording says what happens, not what a team does"
+
+# The nightly audit is configurable and documented, its shell included.
+for word in AUDIT_ENABLED AUDIT_TIME TZ; do
+  grep -qE "^$word=" "$BOT/.env.example" || fail "$BOT/.env.example does not show $word"
+  grep -qF "\`$word\`" "$BOT/README.md" || fail "README.md does not document $word"
+done
+for word in composer-audit clone-pulled.json audit-state.json 'approvals.deny' 'AUDIT_ENABLED=false'; do
+  grep -qF -- "$word" "$BOT/README.md" || fail "README.md does not explain $word"
+done
+pass "AUDIT_ENABLED, AUDIT_TIME and TZ are shown and documented, with the nightly shell"
 
 git check-ignore -q "$BOT/.env" || fail "$BOT/.env is not ignored"
 pass "$BOT/.env is ignored"

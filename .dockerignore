@@ -9,6 +9,7 @@
 !lib/**
 !build/**
 !plugins/**
+!skills/**
 **/*.test.mjs
 **/test_*.py
 **/slug-examples.json

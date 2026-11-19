@@ -34,6 +34,14 @@ RUN printf '%s\n' '#!/command/with-contenv sh' \
       > /etc/cont-init.d/019-pm-bot-gateway-state \
  && chmod 755 /etc/cont-init.d/019-pm-bot-gateway-state
 
+# The nightly composer-audit job (skills/composer-audit) runs `composer audit` on the clone:
+# Debian's PHP CLI and Composer 2, pinned by digest. Composer's cache lives in Hermes' home.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends php-cli \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=composer:2.11.1@sha256:8de2184c6de224f4689e8f80ed5f5edaf0030b6b8b7839a22a2bcb6722ac87d0 /usr/bin/composer /usr/local/bin/composer
+ENV COMPOSER_HOME=/opt/data/composer
+
 COPY --chown=root:root . /opt/pm-bot/
 COPY --chown=root:root --from=skills /out /opt/pm-bot/skills/
 # The method skills the recipes name, each a complete upstream directory, unchanged.

@@ -13,7 +13,16 @@
 #     ${env:BAKERS_API_KEY} Hermes fills, and without the key itself; Hermes
 #     connects to bakers.build's /mcp (a stub of it, pm-bot-mcp-stub.mjs, in a
 #     container of the same image) with the key as bearer and takes exactly the
-#     eight included tools; with a wrong key the check fails
+#     nine included tools; with a wrong key the check fails
+#   - php and composer 2 run as hermes; the nightly audit's script audits a read-only clone
+#     with composer, offline: a lock without packages has no advisories, and a failed composer
+#     run writes no state
+#   - the composer-audit cron job is registered once (schedule from AUDIT_TIME, delivery to the
+#     main channel, the skill) and stays one over two starts; the skill is rendered with the
+#     project; an invalid AUDIT_TIME stops the start by name, and AUDIT_ENABLED=false removes
+#     the job with one log line
+#   - Hermes resolves the cron job's toolsets to terminal, skills, bakers and bot-channels-cron and
+#     Slack's to the bot's five, without the terminal or the channel tool
 #   - the bot-channels plugin is installed and loaded, and the Hermes internals it relies on
 #     (SlackAdapter._handle_slack_message, the channel getters, the reaction lifecycle's
 #     _track_reacting_message, _event_team_id, on_processing_complete and
@@ -108,9 +117,9 @@ grep -qF "url: $BAKERS_URL/mcp" <<<"$config" || fail "config.yaml does not reach
 pass "config.yaml rendered, no placeholder left but the key Hermes fills, no key in it"
 
 grep -q 'Connected' <<<"$out" || { echo "$out" >&2; fail "Hermes does not connect to /mcp with the API key"; }
-grep -qx 'bakers tools: tool_api__bakers_comment_create,tool_api__bakers_ticket_classify,tool_api__bakers_ticket_create,tool_api__bakers_ticket_read,tool_api__bakers_ticket_search,tool_api__bakers_ticket_transition,tool_api__bakers_ticket_update,tool_api__bakers_user_read' <<<"$out" \
-  || { echo "$out" >&2; fail "Hermes does not register exactly the eight included tools of the sixteen offered"; }
-pass "Hermes connects to /mcp with the API key as bearer and takes exactly the eight tools"
+grep -qx 'bakers tools: tool_api__bakers_comment_create,tool_api__bakers_conductor_list,tool_api__bakers_ticket_classify,tool_api__bakers_ticket_create,tool_api__bakers_ticket_read,tool_api__bakers_ticket_search,tool_api__bakers_ticket_transition,tool_api__bakers_ticket_update,tool_api__bakers_user_read' <<<"$out" \
+  || { echo "$out" >&2; fail "Hermes does not register exactly the nine included tools of the sixteen offered"; }
+pass "Hermes connects to /mcp with the API key as bearer and takes exactly the nine tools"
 
 in_data "sed -i 's/^BAKERS_API_KEY=.*/BAKERS_API_KEY=wrong-key/' /d/.env"
 out="$(start --rm -e BAKERS_API_KEY=wrong-key "$IMAGE" check 2>&1)" && { echo "$out" >&2; fail "check passed with a wrong API key"; }
@@ -118,16 +127,86 @@ grep -qE 'Connection failed.*(401|[Uu]nauthori)' <<<"$out" || { echo "$out" >&2;
 in_data "sed -i 's/^BAKERS_API_KEY=.*/BAKERS_API_KEY=$key/' /d/.env"
 pass "a wrong API key fails the check"
 
-grep -qx 'skills: bb-create-ticket,bb-recipe-matt,bb-recipe-superpowers,brainstorming,grilling,writing-plans' <<<"$out" \
-  || { echo "$out" >&2; fail "the installed skills are not exactly the shipped six"; }
+grep -qx 'skills: bb-create-ticket,bb-recipe-matt,bb-recipe-superpowers,brainstorming,composer-audit,grilling,writing-plans' <<<"$out" \
+  || { echo "$out" >&2; fail "the installed skills are not exactly the shipped seven"; }
 grep -qE '^bakers skills [0-9]+\.[0-9]+\.[0-9]+$' <<<"$out" || { echo "$out" >&2; fail "the bundle version is not printed"; }
 in_data '[ ! -e /d/skills/project-manager ]' || fail "the old project-manager skill was not removed"
 pass "the shipped skills are installed, the bundle version printed and project-manager removed"
 
 grep -qx 'plugins: bot-channels' <<<"$out" || { echo "$out" >&2; fail "Hermes does not load exactly the bot-channels plugin"; }
+# The toolsets as Hermes resolves them from the rendered config, plugin toolsets included: only
+# the nightly cron job has the terminal and the channel tool.
+grep -qx 'toolsets cron: bakers,bot-channels-cron,skills,terminal' <<<"$out" \
+  || { echo "$out" >&2; fail "the cron job's toolsets are not exactly terminal, skills, bakers and bot-channels-cron"; }
+grep -qx 'toolsets slack: bakers,clone-reader,memory,session_search,skills' <<<"$out" \
+  || { echo "$out" >&2; fail "Slack's toolsets are not exactly the bot's five"; }
 grep -qx 'plugin seams: ok' <<<"$out" || { echo "$out" >&2; fail "a Hermes internal the bot-channels plugin relies on is gone"; }
 in_data '[ -f /d/plugins/bot-channels/__init__.py ]' || fail "the bot-channels plugin is not in the data directory"
 pass "the bot-channels plugin is installed and loaded, and its Hermes seams exist"
+
+# The nightly audit's tools: php and composer 2, as hermes.
+docker run --rm -u hermes --entrypoint sh "$IMAGE" -c 'php -v && composer --version' >/dev/null 2>&1 \
+  || fail "php or composer does not run as hermes"
+docker run --rm -u hermes --entrypoint composer "$IMAGE" --version 2>/dev/null | grep -qE '^Composer version 2\.' \
+  || fail "composer is not version 2"
+pass "php and composer 2 run as hermes"
+
+# The audit script with the image's composer, offline, on a read-only clone: a lock without
+# packages has no advisories and the run writes only its pending audit; a lock whose audit
+# fails (no network) is the run's error and writes nothing.
+audit_out="$(docker run --rm -i --network none -u hermes -e HERMES_HOME=/tmp/data -e PM_BOT_CLONE_DIR=/tmp/clone --entrypoint sh "$IMAGE" -c '
+  mkdir -p /tmp/data /tmp/clone/empty /tmp/clone/one
+  echo "{\"at\":\"2026-11-20T03:00:00+01:00\",\"head\":\"abc\",\"ok\":true}" >/tmp/data/clone-pulled.json
+  echo "{}" >/tmp/clone/empty/composer.json
+  echo "{\"packages\":[],\"packages-dev\":[]}" >/tmp/clone/empty/composer.lock
+  chmod -R a-w /tmp/clone
+  node /opt/pm-bot/skills/composer-audit/audit.mjs run; echo "rc=$?"
+  ls /tmp/data
+  chmod -R u+w /tmp/clone; rm -f /tmp/data/audit-pending.json
+  echo "{}" >/tmp/clone/one/composer.json
+  echo "{\"packages\":[{\"name\":\"psr/log\",\"version\":\"3.0.2\"}],\"packages-dev\":[]}" >/tmp/clone/one/composer.lock
+  chmod -R a-w /tmp/clone
+  node /opt/pm-bot/skills/composer-audit/audit.mjs run; echo "rc=$?"
+  ls /tmp/data' 2>&1)" || true
+grep -qF '"status": "audited"' <<<"$audit_out" && grep -qF '"count": 0' <<<"$audit_out" \
+  || { echo "$audit_out" >&2; fail "the audit script does not audit a lock without packages to no advisories"; }
+grep -qF '"status": "error"' <<<"$audit_out" && grep -qF 'composer audit failed for one/composer.lock' <<<"$audit_out" \
+  || { echo "$audit_out" >&2; fail "a failed composer audit is not the run's error"; }
+[ "$(grep -c '^audit-state.json$' <<<"$audit_out" || true)" = 0 ] \
+  || { echo "$audit_out" >&2; fail "the audit wrote audit-state.json before a commit"; }
+[ "$(grep -c '^audit-pending.json$' <<<"$audit_out" || true)" = 1 ] \
+  || { echo "$audit_out" >&2; fail "the full audit did not write its pending result once, or the failed one wrote one"; }
+pass "the audit script audits a read-only clone with the image's composer; a failure writes nothing"
+
+# The rendered skill: the project and workflow filled in, no placeholder left.
+skill="$(in_data 'cat /d/skills/composer-audit/SKILL.md')" || fail "the composer-audit skill is not installed"
+! grep -n '\${' <<<"$skill" || fail "the composer-audit skill keeps a placeholder"
+grep -qF "project: \"$(sed -n 's/^PM_BOT_PROJECT=//p' test/fixture.env)\"" <<<"$skill" || fail "the composer-audit skill lacks the project"
+pass "the composer-audit skill is rendered with the project and workflow"
+
+# Hermes scans a cron job's prompt with its loaded skills before each run and blocks the run on
+# a match; the job's prompt and skill must pass.
+scan="$(docker run --rm -i -v "$volume:/d:ro" --entrypoint sh "$IMAGE" -c 'cd /opt/hermes && .venv/bin/python -c "
+import json
+from tools.cronjob_prompt_scan import _scan_cron_prompt, _scan_cron_skill_assembled
+job = [j for j in json.load(open(\"/d/cron/jobs.json\"))[\"jobs\"] if j[\"name\"] == \"composer-audit\"][0]
+skill = open(\"/d/skills/composer-audit/SKILL.md\").read()
+print(\"scan:\", repr(_scan_cron_prompt(job[\"prompt\"])), repr(_scan_cron_skill_assembled(job[\"prompt\"] + chr(10) + skill)[1]))
+"' 2>&1)" || { echo "$scan" >&2; fail "Hermes' cron prompt scan did not run"; }
+grep -qxF "scan: '' ''" <<<"$scan" || { echo "$scan" >&2; fail "Hermes' cron prompt scan blocks the composer-audit job"; }
+pass "the composer-audit job's prompt and skill pass Hermes' cron prompt scan"
+
+# The cron job, as the check start registered it.
+jobs() { in_data 'cat /d/cron/jobs.json' | node -e '
+  const jobs = JSON.parse(require("fs").readFileSync(0, "utf8")).jobs.filter((j) => j.name === "composer-audit");
+  console.log(jobs.map((j) => [j.schedule.expr, j.deliver, j.skills.join("+"), j.enabled].join(" ")).join("\n"));'; }
+[ "$(jobs)" = "30 3 * * * slack:C0000000001 composer-audit true" ] || { jobs >&2; fail "the composer-audit job is not registered once at 03:30 for the main channel"; }
+grep -qF 'pm-bot: composer-audit at 30 3 * * *' <<<"$out" || { echo "$out" >&2; fail "the start does not log the audit job"; }
+pass "the composer-audit job is registered at AUDIT_TIME, delivered to the main channel, with its skill"
+
+out="$(start --rm -e AUDIT_TIME=25:00 "$IMAGE" check 2>&1)" && fail "check passed with AUDIT_TIME=25:00"
+grep -q 'AUDIT_TIME must be HH:MM' <<<"$out" || { echo "$out" >&2; fail "an invalid AUDIT_TIME is not refused by name"; }
+pass "an invalid AUDIT_TIME stops the start"
 
 # The tests are not in the image (.dockerignore); piped in rather than mounted, for CI's Docker-in-Docker.
 tar -C plugins -cf - bot-channels | docker run -i --rm -e PM_BOT_REQUIRE_HERMES=1 --entrypoint sh "$IMAGE" -c \
@@ -214,5 +293,13 @@ docker kill -s KILL "$name" >/dev/null
 in_data 'test -f /d/gateway_state.json && sed -i -E "s/\"gateway_state\": *\"[a-z_]+\"/\"gateway_state\": \"running\"/" /d/gateway_state.json && grep -q "\"gateway_state\": \"running\"" /d/gateway_state.json' \
   || fail "the killed gateway left no state file to restart from"
 run_bot "start after the container was killed"
+docker rm -f "$name" >/dev/null 2>&1 || true
+[ "$(jobs)" = "30 3 * * * slack:C0000000001 composer-audit true" ] || { jobs >&2; fail "starts left more or less than one composer-audit job"; }
+pass "three starts keep exactly one composer-audit job"
+
+out="$(start --rm -e AUDIT_ENABLED=false "$IMAGE" check 2>&1)" || { echo "$out" >&2; fail "check mode failed with AUDIT_ENABLED=false"; }
+[ "$(grep -c 'pm-bot: the nightly composer audit is off' <<<"$out")" = 1 ] || { echo "$out" >&2; fail "AUDIT_ENABLED=false does not log one line"; }
+[ -z "$(jobs)" ] || { jobs >&2; fail "AUDIT_ENABLED=false keeps the composer-audit job"; }
+pass "AUDIT_ENABLED=false removes the job with one log line"
 
 echo "OK: pm-bot image check holds"

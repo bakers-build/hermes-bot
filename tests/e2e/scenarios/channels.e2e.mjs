@@ -4,7 +4,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { cancel, channel, moveTo, never, pause, reopen, site, slack, ticketFor, waitFor } from '../lib/stack.mjs';
+import { cancel, channel, moveTo, never, pollerState, reopen, site, slack, ticketFor, waitFor } from '../lib/stack.mjs';
 
 test('given a request channel, when its ticket exists, then the channel is renamed after the ticket', async () => {
   const ch = channel('C0E2E0201');
@@ -18,9 +18,8 @@ test('given a ticket in its channel, when it moves to review, then one post appe
   const ch = channel('C0E2E0202');
   const ticket = await ticketFor(ch, 'Post my review state');
   await moveTo(ticket.identifier, 'plan', 'working');
-  // The poller has caught up with working before the move under test.
-  await waitFor('the working post', async () => (await slack.posts(ch.id)).length >= 1);
-  await pause(6_000);
+  // The poller has posted working, the state before the move under test.
+  await waitFor('the working post', () => pollerState(ticket.identifier) === 'working');
   const before = (await slack.posts(ch.id)).length;
   await moveTo(ticket.identifier, 'review');
   await waitFor('the review post', async () => (await slack.posts(ch.id)).length > before);
@@ -32,7 +31,7 @@ test('given a ticket channel, when the ticket is done and reopened, then the cha
   const ch = channel('C0E2E0203', { requester: 'U0E2EREQ' });
   const ticket = await ticketFor(ch, 'Close and reopen me');
   await moveTo(ticket.identifier, 'plan', 'working', 'review');
-  await waitFor('the review post', async () => (await slack.posts(ch.id)).length >= 1);
+  await waitFor('the review post', () => pollerState(ticket.identifier) === 'review');
   await moveTo(ticket.identifier, 'done');
   await waitFor('the archive', async () => (await slack.of('conversations.archive')).find((c) => c.body.channel === ch.id));
   const archivedAt = (await slack.calls()).findIndex((c) => c.method === 'conversations.archive' && c.body.channel === ch.id);

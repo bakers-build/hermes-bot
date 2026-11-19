@@ -4,15 +4,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { handOver } from '../lib/handover.mjs';
-import { cancel, channel, moveTo, never, pause, restart, slack, ticketFor, waitFor } from '../lib/stack.mjs';
+import { cancel, channel, moveTo, never, pollerState, restart, slack, ticketFor, waitFor } from '../lib/stack.mjs';
 
 test('given posted states, when the bot restarts, then nothing is posted twice', async () => {
   const ch = channel('C0E2E0301');
   const ticket = await ticketFor(ch, 'Survive a bot restart');
   await moveTo(ticket.identifier, 'plan', 'working', 'review');
-  await waitFor('the review post', async () => (await slack.posts(ch.id)).length >= 1);
-  // A few passes, so the poller has recorded what it posted.
-  await pause(6_000);
+  await waitFor('the review post', () => pollerState(ticket.identifier) === 'review');
   const before = await slack.posts(ch.id);
   await restart('pm-bot');
   await never('a post after the restart', async () => {

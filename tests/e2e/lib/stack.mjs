@@ -72,8 +72,6 @@ export async function waitFor(what, check, { timeout = 180_000, interval = 2_000
   }
 }
 
-export const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
 /** Holds for `ms` and fails when `check` turns truthy meanwhile: proof that something stays away. */
 export async function never(what, check, { ms = 20_000, interval = 2_000 } = {}) {
   const until = Date.now() + ms;
@@ -206,10 +204,12 @@ export async function ticketFor(ch, title) {
  * nothing, so a move under test comes after it.
  */
 export function followed(identifier) {
-  return waitFor(`the poller following ${identifier}`, () => {
-    const state = JSON.parse(readFileSync(join(OUT, 'data', 'poller-state.json'), 'utf8'));
-    return state.tickets?.[identifier] !== undefined;
-  });
+  return waitFor(`the poller following ${identifier}`, () => pollerState(identifier) !== undefined);
+}
+
+/** The state the poller last posted (or recorded) for a ticket. */
+export function pollerState(identifier) {
+  return JSON.parse(readFileSync(join(OUT, 'data', 'poller-state.json'), 'utf8')).tickets?.[identifier];
 }
 
 /** The poller's record of a ticket: what it saw of its runs, summaries and links. */

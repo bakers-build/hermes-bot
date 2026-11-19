@@ -79,12 +79,18 @@ approvals:
     - "*$*"
     - "*curl*"
     - "*wget*"
+    - "*node -e*"
+    - "*node -p*"
+    - "*node --e*"
+    - "*node --p*"
+    - "*python*"
 
 # The cron job's answer goes into the main channel as written: one line, or nothing on
-# [SILENT]. A night the container was down catches up when it starts within two hours.
+# [SILENT]. A night the container was down catches up when it starts within two hours (Hermes'
+# grace window for a daily job); a start any later skips that night with a log line.
 cron:
   wrap_response: false
-  catch_up_missed: true
+  catch_up_missed: false
 
 agent:
   # Every toolset that can change the system or reach beyond bakers.build's tools and

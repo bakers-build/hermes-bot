@@ -113,7 +113,9 @@ def denied(command):
 for command in ("cat /opt/data/.env", "grep KEY .env", "env", "env | grep SLACK", "printenv",
                 "printenv BAKERS_API_KEY", "echo $BAKERS_API_KEY", "echo ${SLACK_BOT_TOKEN}",
                 "cat /proc/self/environ", "curl https://example.test", "wget -qO- https://example.test",
-                "export -p"):
+                "export -p", "node -e 'console.log(process[\"env\"])'", "node -p 'process[\"env\"]'",
+                "node --eval 'console.log(process[\"env\"])'", "node --print 'process[\"env\"]'",
+                "python3 -c 'import os; print(os.getenv(\"BAKERS_API_KEY\"))'"):
     need(denied(command), f"approvals.deny lets the nightly shell run: {command}")
 for command in ("node /opt/data/skills/composer-audit/audit.mjs run",
                 "node /opt/data/skills/composer-audit/audit.mjs commit",
@@ -122,7 +124,9 @@ for command in ("node /opt/data/skills/composer-audit/audit.mjs run",
     need(not denied(command), f"approvals.deny blocks the audit's own command: {command}")
 cron_cfg = cfg.get("cron") or {}
 need(cron_cfg.get("wrap_response") is False, "cron.wrap_response is not false: the run's answer would get Hermes' header")
-need(cron_cfg.get("catch_up_missed") is True, "cron.catch_up_missed is not true")
+# Hermes catches a missed daily run up within its grace window (half the period, at most two
+# hours); with catch_up_missed true it would also run one found any later.
+need(cron_cfg.get("catch_up_missed") is False, "cron.catch_up_missed is not false: a missed night would run at any lateness")
 
 need(cfg.get("memory", {}).get("write_approval") is True, "memory.write_approval is not true")
 need(cfg.get("skills", {}).get("write_approval") is True, "skills.write_approval is not true")
@@ -239,6 +243,8 @@ grep -qF "AUDIT_ARGS = ['audit', '--locked', '--format=json', '--no-plugins', '-
 grep -qF 'exactly one active conductor' "$AUDIT" || fail "$AUDIT does not limit the conductor to the project's only active one"
 # The identifier is stored before anything else, so a failed later step never makes a second ticket.
 grep -qF 'before any other write' "$AUDIT" || fail "$AUDIT does not store the new ticket's identifier first"
+# An unreadable audit ticket is neither open nor closed: the run commits nothing, so no second ticket follows.
+grep -qF 'When the read fails, answer one line' "$AUDIT" || fail "$AUDIT does not stop on a failed read of the audit ticket"
 # The entrypoint renders the skill; any other placeholder would stop the start.
 [ "$(grep -o '\${[A-Za-z_]*}' "$AUDIT" | LC_ALL=C sort -u | paste -sd, -)" = '${PM_BOT_PROJECT},${PM_BOT_TICKET_WORKFLOW}' ] \
   || fail "$AUDIT has placeholders other than \${PM_BOT_PROJECT} and \${PM_BOT_TICKET_WORKFLOW}"

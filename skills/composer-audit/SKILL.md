@@ -7,7 +7,7 @@ description: The nightly Composer security audit of the project's clone. Use onl
 
 You run unattended, once a night. Nobody reads along: your final answer goes into the project's main channel, so it is either one line or `[SILENT]`.
 
-The script `/opt/data/skills/composer-audit/audit.mjs` does the fixed work: it reads the box's pull marker `/opt/data/clone-pulled.json` (an audit runs only on a marker with `"ok": true` newer than the last audit), finds every `composer.lock` with a `composer.json` beside it outside `.git/`, `vendor/` and `node_modules/`, runs `composer audit --locked --format=json --no-plugins --no-scripts --abandoned=ignore` in each lock's directory, and compares the `advisories` with the last audit in `/opt/data/audit-state.json` (per advisory ID: lock, package, installed, affected range, fixed in, severity, CVE, link, first seen). You decide; the script writes the state only when you commit.
+The script `/opt/data/skills/composer-audit/audit.mjs` does the fixed work: it reads the box's pull marker `/opt/data/clone-pulled.json` (an audit runs only on a marker with `"ok": true` newer than the last audit), finds every `composer.lock` with a `composer.json` beside it outside `.git/`, `vendor/` and `node_modules/`, runs `composer audit --locked --format=json --no-plugins --no-scripts --abandoned=ignore` in each lock's directory, and compares the `advisories` with the last audit in `/opt/data/audit-state.json` (per advisory ID and lock file: package, installed, affected range, fixed in, severity, CVE, link, first seen). You decide; the script writes the state only when you commit.
 
 Run exactly the two commands below in the terminal, as written. Every advisory detail reaches bakers.build through your tools, never through a shell command.
 
@@ -24,6 +24,8 @@ Write your answer line in the language with ISO 639-1 code `language`.
 ## 2. Is the audit ticket open?
 
 When `ticket` is set, read it with `mcp_bakers__tool_api__bakers_ticket_read` (`newest: 0`). It is open unless its state is `done` or `cancelled`. With no `ticket`, none is open. When it is closed, every current advisory counts as new.
+
+When the read fails, answer one line: `Composer audit: cannot read the audit ticket` with `ticket` and the error. Commit nothing and stop; the next night reads it again.
 
 Done when you know: open audit ticket, or none.
 

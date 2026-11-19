@@ -10,7 +10,8 @@
 //
 // Files (HERMES_HOME, default /opt/data): clone-pulled.json, the box's pull marker
 // { at, head, ok, error }; audit-state.json { marker_at, audited_at, ticket, advisories }, the
-// advisories by advisory ID; bot-language.json, the bot's language. The clone is
+// advisories keyed `<advisory ID> (<lock file>)`, since one advisory can hit several lock files;
+// bot-language.json, the bot's language. The clone is
 // PM_BOT_CLONE_DIR (default /opt/clone); AUDIT_COMPOSER names the composer binary for tests.
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -105,6 +106,8 @@ function audit(clone, lockPath, composer) {
   }));
 }
 
+// A directory as one shell word, quoted only when it needs it.
+const shellWord = (word) => (/^[\w./-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`);
 const cell = (value) => String(value ?? '—').replaceAll('|', '\\|');
 const reference = (a) => {
   const label = cell(a.cve || a.id);
@@ -122,7 +125,7 @@ function tables(advisories) {
     const rows = byLock.get(lock).sort((a, b) => a.package.localeCompare(b.package) || a.id.localeCompare(b.id));
     const packages = [...new Set(rows.map((a) => a.package))].sort().join(' ');
     const dir = dirname(lock);
-    const command = `${dir === '.' ? '' : `cd ${dir} && `}composer update ${packages} --with-dependencies`;
+    const command = `${dir === '.' ? '' : `cd ${shellWord(dir)} && `}composer update ${packages} --with-dependencies`;
     return [
       `### \`${lock}\``,
       '',
@@ -143,9 +146,15 @@ function packagesOf(advisories) {
 
 function run({ data, clone, composer, now }) {
   const markerPath = join(data, 'clone-pulled.json');
-  const state = readJson(join(data, 'audit-state.json')) ?? { advisories: {} };
   const language = readJson(join(data, 'bot-language.json'))?.language ?? 'de';
   const skip = (reason) => ({ status: 'skip', reason, language });
+  const failed = (reason) => ({ status: 'error', reason, language });
+  let state;
+  try {
+    state = readJson(join(data, 'audit-state.json')) ?? { advisories: {} };
+  } catch (error) {
+    return failed(`the audit state audit-state.json is unreadable (${error.message})`);
+  }
   let marker;
   try {
     marker = readJson(markerPath);
@@ -160,18 +169,22 @@ function run({ data, clone, composer, now }) {
     return skip(`skipped: no pull since the last audit (last pull ${marker.at})`);
   }
 
-  const locks = findLocks(clone);
+  let locks;
+  try {
+    locks = findLocks(clone);
+  } catch (error) {
+    return failed(`the clone ${clone} is unreadable (${error.message})`);
+  }
   const advisories = {};
   try {
     for (const lock of locks) {
       for (const a of audit(clone, lock, composer)) {
-        const key = advisories[a.id] ? `${a.id} (${a.lock})` : a.id;
-        const { id, ...rest } = a;
-        advisories[key] = { ...rest, first_seen: state.advisories?.[key]?.first_seen ?? now.toLocaleDateString('en-CA') };
+        const key = `${a.id} (${a.lock})`;
+        advisories[key] = { ...a, first_seen: state.advisories?.[key]?.first_seen ?? now.toLocaleDateString('en-CA') };
       }
     }
   } catch (error) {
-    return { status: 'error', reason: error.message, language };
+    return failed(error.message);
   }
 
   const previous = state.advisories ?? {};
@@ -185,13 +198,12 @@ function run({ data, clone, composer, now }) {
   const packages = packagesOf(advisories);
   const comment = [];
   if (fresh.length) {
-    comment.push('#### New advisories', '', tables(Object.fromEntries(fresh.map((k) => [k, { id: k.split(' ')[0], ...advisories[k] }]))));
+    comment.push('#### New advisories', '', tables(Object.fromEntries(fresh.map((k) => [k, advisories[k]]))));
   }
   if (gone.length) {
     comment.push(...(comment.length ? [''] : []), '#### Resolved in the clone', '',
-      ...gone.map((k) => `- ${previous[k].package} ${previous[k].installed} · ${k} (\`${previous[k].lock}\`)`));
+      ...gone.map((k) => `- ${previous[k].package} ${previous[k].installed} · ${previous[k].id} (\`${previous[k].lock}\`)`));
   }
-  const withIds = Object.fromEntries(Object.entries(advisories).map(([k, a]) => [k, { id: k.split(' ')[0], ...a }]));
   return {
     status: 'audited',
     language,
@@ -204,7 +216,7 @@ function run({ data, clone, composer, now }) {
     gone,
     title: count ? `Security updates: ${count} Composer advisories (${packages.join(', ')})` : null,
     description: count
-      ? [`The nightly Composer audit of the clone at \`${marker.head ?? 'unknown'}\` found ${count} security ${count === 1 ? 'advisory' : 'advisories'} in ${packages.length} ${packages.length === 1 ? 'package' : 'packages'}.`, '', tables(withIds)].join('\n')
+      ? [`The nightly Composer audit of the clone at \`${marker.head ?? 'unknown'}\` found ${count} security ${count === 1 ? 'advisory' : 'advisories'} in ${packages.length} ${packages.length === 1 ? 'package' : 'packages'}.`, '', tables(advisories)].join('\n')
       : null,
     comment: comment.length ? comment.join('\n') : null,
   };

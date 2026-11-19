@@ -208,6 +208,28 @@ out="$(start --rm -e AUDIT_TIME=25:00 "$IMAGE" check 2>&1)" && fail "check passe
 grep -q 'AUDIT_TIME must be HH:MM' <<<"$out" || { echo "$out" >&2; fail "an invalid AUDIT_TIME is not refused by name"; }
 pass "an invalid AUDIT_TIME stops the start"
 
+# A night missed while the container was down is still due at the next start: a start keeps the
+# job's due time, and only a changed AUDIT_TIME moves it.
+next_run() { in_data 'cat /d/cron/jobs.json' | node -e '
+  const jobs = JSON.parse(require("fs").readFileSync(0, "utf8")).jobs.filter((j) => j.name === "composer-audit");
+  console.log(jobs.map((j) => `${j.schedule.expr} ${j.next_run_at}`).join("\n"));'; }
+overdue=2026-01-01T03:30:00+00:00
+in_data "node -e '
+  const fs = require(\"fs\");
+  const store = JSON.parse(fs.readFileSync(\"/d/cron/jobs.json\", \"utf8\"));
+  for (const job of store.jobs) if (job.name === \"composer-audit\") job.next_run_at = \"$overdue\";
+  fs.writeFileSync(\"/d/cron/jobs.json\", JSON.stringify(store, null, 2));'" || fail "cannot make the composer-audit job overdue"
+out="$(start --rm "$IMAGE" check 2>&1)" || { echo "$out" >&2; fail "check mode failed over an overdue job"; }
+[ "$(next_run)" = "30 3 * * * $overdue" ] || { next_run >&2; fail "a start moved the overdue composer-audit job, so a missed night is not caught up"; }
+pass "a start keeps an overdue composer-audit job due"
+out="$(start --rm -e AUDIT_TIME=04:15 "$IMAGE" check 2>&1)" || { echo "$out" >&2; fail "check mode failed with AUDIT_TIME=04:15"; }
+moved="$(next_run)"
+[ "${moved%% 20*}" = "15 4 * * *" ] && [ "${moved#15 4 \* \* \* }" != "$overdue" ] \
+  || { echo "$moved" >&2; fail "a changed AUDIT_TIME does not reschedule the composer-audit job"; }
+out="$(start --rm "$IMAGE" check 2>&1)" || { echo "$out" >&2; fail "check mode failed back at the default AUDIT_TIME"; }
+[ "$(jobs)" = "30 3 * * * slack:C0000000001 composer-audit true" ] || { jobs >&2; fail "the default AUDIT_TIME does not come back"; }
+pass "a changed AUDIT_TIME reschedules the composer-audit job"
+
 # The tests are not in the image (.dockerignore); piped in rather than mounted, for CI's Docker-in-Docker.
 tar -C plugins -cf - bot-channels | docker run -i --rm -e PM_BOT_REQUIRE_HERMES=1 --entrypoint sh "$IMAGE" -c \
   'mkdir -p /tmp/t && tar -C /tmp/t -xf - && cd /opt/hermes && .venv/bin/python -m unittest discover -s /tmp/t/bot-channels -p test_recovery.py' \

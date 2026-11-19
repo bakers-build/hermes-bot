@@ -3,7 +3,7 @@
 // from a file per lock directory.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { main } from './audit.mjs';
@@ -150,7 +150,7 @@ test('findings carry the installed version, the fixed-in version and a ticket te
   t.put('data/clone-pulled.json', marker('2026-11-20T03:00:00+01:00'));
   const { out } = t.cli(['run']);
   assert.equal(out.count, 3);
-  assert.deepEqual(out.new.sort(), ['PKSA-0001', 'PKSA-0002', 'SA-CORE-2026-0003']);
+  assert.deepEqual(out.new.sort(), ['PKSA-0001 (composer.lock)', 'PKSA-0002 (composer.lock)', 'SA-CORE-2026-0003 (web/themes/site/composer.lock)']);
   assert.equal(out.title, 'Security updates: 3 Composer advisories (drupal/core, guzzlehttp/guzzle, phpunit/phpunit)');
   const d = out.description;
   assert.match(d, /### `composer\.lock`/);
@@ -173,8 +173,8 @@ test('commit records the findings, the marker, the audit time and the ticket; th
   assert.equal(state.marker_at, '2026-11-20T03:00:00+01:00');
   assert.equal(state.audited_at, NIGHT.toISOString());
   assert.equal(state.ticket, 'YF-12');
-  assert.deepEqual(state.advisories['PKSA-0001'], {
-    lock: 'composer.lock', package: 'guzzlehttp/guzzle', installed: '6.5.0', affected: '<7.15.2', fixed_in: '7.15.2',
+  assert.deepEqual(state.advisories['PKSA-0001 (composer.lock)'], {
+    id: 'PKSA-0001', lock: 'composer.lock', package: 'guzzlehttp/guzzle', installed: '6.5.0', affected: '<7.15.2', fixed_in: '7.15.2',
     severity: 'high', cve: 'CVE-2026-0001', link: 'https://github.com/advisories/GHSA-0001', first_seen: '2026-11-20',
   });
   assert.equal(t.exists('data/audit-pending.json'), false);
@@ -184,15 +184,15 @@ test('commit records the findings, the marker, the audit time and the ticket; th
   t.put('clone/.answer.json', answer(advisory('PKSA-0004', 'guzzlehttp/guzzle', '<7.16.0')));
   let { out } = t.cli(['run'], new Date('2026-11-21T03:30:00+01:00'));
   assert.equal(out.ticket, 'YF-12');
-  assert.deepEqual([out.new, out.gone], [['PKSA-0004'], ['PKSA-0001']]);
+  assert.deepEqual([out.new, out.gone], [['PKSA-0004 (composer.lock)'], ['PKSA-0001 (composer.lock)']]);
   assert.match(out.comment, /New advisories/);
   assert.match(out.comment, /PKSA-0004|CVE-2026-0004/);
   assert.match(out.comment, /Resolved in the clone[\s\S]*guzzlehttp\/guzzle.*PKSA-0001/);
   t.cli(['commit'], new Date('2026-11-21T03:30:00+01:00'));
   const next = t.read('data/audit-state.json');
   assert.equal(next.ticket, 'YF-12');
-  assert.deepEqual(Object.keys(next.advisories), ['PKSA-0004']);
-  assert.equal(next.advisories['PKSA-0004'].first_seen, '2026-11-21');
+  assert.deepEqual(Object.keys(next.advisories), ['PKSA-0004 (composer.lock)']);
+  assert.equal(next.advisories['PKSA-0004 (composer.lock)'].first_seen, '2026-11-21');
 
   // A third night, nothing changed: nothing new, nothing gone, no comment.
   t.put('data/clone-pulled.json', marker('2026-11-22T03:00:00+01:00'));
@@ -217,4 +217,51 @@ test('the run reports the bot language for its answer', () => {
   t.put('data/clone-pulled.json', marker('2026-11-20T03:00:00+01:00'));
   t.put('data/bot-language.json', { language: 'en' });
   assert.equal(t.cli(['run']).out.language, 'en');
+});
+
+test('an advisory in two lock files is tracked per lock: fixing one is resolved there and new nowhere', () => {
+  const t = setup();
+  const both = { '.': lock([['guzzlehttp/guzzle', '6.5.0']]), 'web/themes/site': lock([['guzzlehttp/guzzle', '6.5.0']]) };
+  project(t, { locks: both, answers: {
+    '.': answer(advisory('PKSA-0001', 'guzzlehttp/guzzle', '<7.15.2')),
+    'web/themes/site': answer(advisory('PKSA-0001', 'guzzlehttp/guzzle', '<7.15.2')),
+  } });
+  t.put('data/clone-pulled.json', marker('2026-11-20T03:00:00+01:00'));
+  assert.equal(t.cli(['run']).out.count, 2);
+  t.cli(['commit', '--ticket', 'YF-12']);
+
+  // The root lock is updated; the theme's lock still has the advisory.
+  t.put('data/clone-pulled.json', marker('2026-11-21T03:00:00+01:00'));
+  t.put('clone/.answer.json', answer());
+  const { out } = t.cli(['run'], new Date('2026-11-21T03:30:00+01:00'));
+  assert.equal(out.count, 1);
+  assert.deepEqual(out.new, []);
+  assert.deepEqual(out.gone, ['PKSA-0001 (composer.lock)']);
+  assert.match(out.comment, /Resolved in the clone\n\n- guzzlehttp\/guzzle 6\.5\.0 · PKSA-0001 \(`composer\.lock`\)$/);
+  assert.doesNotMatch(out.description, /### `composer\.lock`/);
+  assert.match(out.description, /### `web\/themes\/site\/composer\.lock`[\s\S]*CVE-2026-0001/);
+});
+
+test('an unreadable audit state is an error result, and nothing is audited or written', () => {
+  const t = setup();
+  project(t);
+  t.put('data/clone-pulled.json', marker('2026-11-20T03:00:00+01:00'));
+  t.put('data/audit-state.json', '{ not json');
+  const { code, out } = t.cli(['run']);
+  assert.equal(code, 1);
+  assert.equal(out.status, 'error');
+  assert.match(out.reason, /audit-state\.json/);
+  assert.deepEqual(t.calls(), []);
+  assert.equal(t.exists('data/audit-pending.json'), false);
+});
+
+test('a missing clone is an error result, and nothing is written', () => {
+  const t = setup();
+  t.put('data/clone-pulled.json', marker('2026-11-20T03:00:00+01:00'));
+  rmSync(t.clone, { recursive: true });
+  const { code, out } = t.cli(['run']);
+  assert.equal(code, 1);
+  assert.equal(out.status, 'error');
+  assert.match(out.reason, /clone/);
+  assert.equal(t.exists('data/audit-pending.json'), false);
 });

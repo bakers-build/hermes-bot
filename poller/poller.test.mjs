@@ -147,6 +147,28 @@ test('a run cancelled by the freeze of a technical problem posts only the techni
   assert.deepEqual(slack.posts().slice(before), []);
 });
 
+for (const [freeze, kind] of [[frozenWithQuestion, 'question'], [frozenWithTechnicalProblem, 'technical_problem']]) {
+  test(`a run cancelled by a ${kind} freeze after the pass listed the tickets posts the summary and relays the note, never the paused line`, async (t) => {
+    const { s, slack, sent, poller } = await setup(t);
+    const ticket = s.addTicket({ state: 'working', links: [thread()] });
+    const running = s.addRun(ticket);
+    await poller.pass();
+    const before = slack.posts().length;
+    s.addComment(ticket, { type: 'summary', body: '### Outcome\n\nThe price list is updated.' });
+    // The run asks between the list read and the run list of this pass.
+    s.beforeTool('bakers_run_list', () => {
+      s.beforeTool('bakers_run_list', null);
+      freeze(s, ticket);
+      running.state = 'cancelled';
+    });
+    await poller.pass();
+    await poller.pass();
+    await poller.pass();
+    assert.deepEqual(sent.map((p) => p.kind), [kind]);
+    assert.deepEqual(slack.posts().slice(before).map((p) => p.text), ['The price list is updated.']);
+  });
+}
+
 test('a ticket labelled Question and technical problem gets only the technical-problem post', async (t) => {
   const { s, sent, poller } = await setup(t);
   const ticket = s.addTicket({ state: 'working', links: [thread()] });
@@ -572,6 +594,8 @@ test('technical problems, paused runs and done link the known sub-ticket across 
   child.labels = [];
   child.frozen = false;
   run.state = 'failed';
+  await restart().pass();
+  // The paused line waits one pass for a label or freeze.
   await restart().pass();
   assert.match(slack.posts().at(-1).text, /^ACME-2 · .*\n\n<https:\/\/bakers.test\/child\|/);
   child.state = 'done';

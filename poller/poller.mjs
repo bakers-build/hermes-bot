@@ -242,8 +242,9 @@ export function createPoller({ client, slack, send, stateFile, botChannelsFile, 
     for (const t of current.filter((t) => t.conversation && !archived(state, t) && !CLOSED.includes(t.state))) {
       try {
         const { runs } = await client.tool('bakers_run_list', { ticket: t.id });
-        const { comments } = await client.tool('bakers_ticket_read', { ticket: t.id, newest: ALL_COMMENTS });
-        read.push({ ...t, runs: runs ?? [], comments: comments ?? [] });
+        // Read after the runs, so a run's end is judged by the labels and freeze it ended with.
+        const ticket = await client.tool('bakers_ticket_read', { ticket: t.id, newest: ALL_COMMENTS });
+        read.push({ ...t, labels: ticket.labels ?? t.labels, frozen: ticket.frozen ?? t.frozen, runs: runs ?? [], comments: ticket.comments ?? [] });
       } catch (error) {
         if (state.updates[t.identifier]) kept[t.identifier] = state.updates[t.identifier];
         log.error(`${stamp()} updates of ${t.identifier}: ${error.message}`);

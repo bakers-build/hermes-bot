@@ -14,8 +14,9 @@
 #   tests/e2e/run.sh up [IMAGE] [--real]   start and seed the stack for testing by hand, run no
 #                                          scenario; print the site's URL and login links. Needs a
 #                                          model key: talking to the bot by hand needs a real model.
-#   tests/e2e/run.sh chat ["<request>"]    talk to the bot as the requester (hermes chat), the
-#                                          request sent with the channel's trusted line
+#   tests/e2e/run.sh chat [TICKET] ["<message>"]   talk to the bot as the requester (hermes chat):
+#                                          in a fresh request channel, or in TICKET's channel; the
+#                                          message goes with the channel's trusted line
 #   tests/e2e/run.sh slack                 follow the Slack calls the poller makes
 #   tests/e2e/run.sh agent <ticket> <script>   the stub agent's next run on <ticket> plays
 #                                          tests/e2e/agent/<script>.json (question, technical-problem, …)
@@ -261,9 +262,42 @@ case "${1:-}" in
   chat)
     load_stack
     [ "$MODE" = real ] || die "chat needs a stack started with a model key (tests/e2e/run.sh up)"
+    shift
+    email="$(node -p "require('$OUT/seed.json').requester_email")"
+    ticket="none yet"
+    if [[ "${1:-}" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]]; then
+      # A ticket's channel: its newest Slack channel link, read from the site as the bot reads it.
+      ticket="$1"
+      shift
+      channel="$(node - "$OUT/seed.json" "$ticket" "$(dc port nginx 80 | sed 's/.*://')" "$SITE_HOST" <<'NODE'
+const http = require('node:http');
+const [seedFile, ticket, port, host] = process.argv.slice(2);
+const key = require(seedFile).bot_api_key;
+let session = '';
+const rpc = (message) => new Promise((resolve, reject) => {
+  const headers = { host, 'content-type': 'application/json', accept: 'application/json, text/event-stream', authorization: `Bearer ${key}` };
+  if (session) headers['mcp-session-id'] = session;
+  const req = http.request({ host: '127.0.0.1', port, method: 'POST', path: '/mcp', headers }, (res) => {
+    let text = '';
+    res.on('data', (chunk) => (text += chunk));
+    res.on('end', () => { session = res.headers['mcp-session-id'] ?? session; resolve(message.id === undefined ? null : JSON.parse(text).result); });
+  });
+  req.on('error', reject);
+  req.end(JSON.stringify(message));
+});
+(async () => {
+  await rpc({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'e2e-chat', version: '1' } } });
+  await rpc({ jsonrpc: '2.0', method: 'notifications/initialized' });
+  const result = await rpc({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'tool_api__bakers_ticket_read', arguments: { ticket, newest: 0 } } });
+  const link = (result?.structuredContent?.links ?? []).filter((l) => l.title === 'Slack channel').at(-1);
+  if (!link) { console.error(`${ticket} has no Slack channel link`); process.exit(1); }
+  console.log(link.uri.split('/').at(-1));
+})();
+NODE
+)" || die "no channel for $ticket"
+    else
     # A fresh request channel per chat, recorded as the bot-channels plugin records the channels it
     # opens, so the poller renames, archives and reopens it.
-    email="$(node -p "require('$OUT/seed.json').requester_email")"
     channel="$(node -e '
       const fs = require("node:fs");
       const [file, email] = process.argv.slice(1);
@@ -275,10 +309,10 @@ case "${1:-}" in
       fs.writeFileSync(file, JSON.stringify(bot, null, 2));
       console.log(channel);
     ' "$OUT/data/bot-channels.json" "$email")"
-    shift
+    fi
     # The channel's trusted line and the requester's prefix, as the gateway and the bot-channels
     # plugin would add them; Hermes' CLI adds neither.
-    trusted="This is the request channel $channel. Its conversation link is https://e2e.slack.com/archives/$channel. Its ticket: none yet. Its requester's e-mail address: $email. Answer in the language with ISO 639-1 code ${E2E_LANGUAGE:-de}."
+    trusted="This is the request channel $channel. Its conversation link is https://e2e.slack.com/archives/$channel. Its ticket: $ticket. Its requester's e-mail address: $email. Answer in the language with ISO 639-1 code ${E2E_LANGUAGE:-de}."
     prefix='[Requester | Slack user <@U0E2EREQ>]'
     if [ $# -gt 0 ]; then
       echo "Channel $channel. Later messages: start each with $prefix (another person: [Name | Slack user <@U…>])."

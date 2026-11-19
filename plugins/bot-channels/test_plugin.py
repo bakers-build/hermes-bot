@@ -11,6 +11,7 @@ import sys
 import tempfile
 import types
 import unittest
+import unittest.mock
 
 HERE = pathlib.Path(__file__).parent
 HOME = "CHOME"
@@ -214,6 +215,108 @@ class Middleware(unittest.IsolatedAsyncioTestCase):
         for outcome in (Outcome.SUCCESS, Outcome.FAILURE, Outcome.CANCELLED):
             await self.adapter.on_processing_complete(object(), outcome)
         self.assertEqual(self.calls, [("complete", {"outcome": Outcome.CANCELLED})] * 3)
+
+
+class Context:
+    """Hermes' PluginContext as the plugin uses it in ``register``."""
+
+    def __init__(self):
+        self.tools = {}
+
+    def register_platform_handler(self, platform, factory):
+        self.platform = (platform, factory)
+
+    def register_tool(self, name, toolset, schema, handler, is_async=False, **_):
+        self.tools[name] = {"toolset": toolset, "schema": schema, "handler": handler, "is_async": is_async}
+
+
+class NameTaken(_errors.SlackApiError):
+    def __init__(self):
+        super().__init__("name_taken")
+        self.response = {"error": "name_taken"}
+
+
+class OpenRequestChannelTool(unittest.IsolatedAsyncioTestCase):
+    """The nightly audit's ``open_request_channel`` tool, as the cron run calls it."""
+
+    def setUp(self):
+        os.environ.update(SLACK_ALLOWED_CHANNELS=HOME, SLACK_ALLOWED_USERS="U1", SLACK_WORKSPACE_URL="https://acme.slack.com/")
+        with open(os.path.join(DATA, "bot-channels.json"), "w") as fh:
+            json.dump({OPEN: {"name": "req-open"}}, fh)
+        self.calls = []
+        self.taken = set()
+        # Hermes' session store, which register() patches; not needed here.
+        stubs = unittest.mock.patch.dict(sys.modules, {
+            "gateway": types.ModuleType("gateway"),
+            "gateway.session_unattended_unknown": types.ModuleType("gateway.session_unattended_unknown")})
+        stubs.start()
+        self.addCleanup(stubs.stop)
+        self.ctx = Context()
+        plugin.register(self.ctx)
+        plugin._slack_client = lambda: self
+
+    async def conversations_create(self, name, is_private):
+        self.calls.append(("conversations_create", {"name": name, "is_private": is_private}))
+        if name in self.taken:
+            raise NameTaken()
+        return {"channel": {"id": "CAUDIT"}}
+
+    async def call(self, **args):
+        tool = self.ctx.tools["open_request_channel"]
+        result = tool["handler"](args)
+        return json.loads(await result if tool["is_async"] else result)
+
+    def record(self, channel):
+        with open(os.path.join(DATA, "bot-channels.json")) as fh:
+            return json.load(fh)[channel]
+
+    def test_the_tool_belongs_to_the_cron_only_toolset(self):
+        tool = self.ctx.tools["open_request_channel"]
+        self.assertEqual(tool["toolset"], "bot-channels-cron")
+        self.assertEqual(tool["schema"]["name"], "open_request_channel")
+        self.assertEqual(tool["schema"]["parameters"]["required"], ["title"])
+
+    async def test_it_opens_a_public_request_channel_without_a_requester_and_returns_its_link(self):
+        result = await self.call(title="Security updates: 2 Composer advisories (guzzlehttp/guzzle)")
+        self.assertEqual(self.calls, [("conversations_create", {"name": "req-security-updates-2-composer", "is_private": False})])
+        self.assertEqual(result, {"channel": "CAUDIT", "name": "req-security-updates-2-composer",
+                                  "link": "https://acme.slack.com/archives/CAUDIT"})
+        record = self.record("CAUDIT")
+        self.assertIsNone(record["requester"])
+        self.assertNotIn("requester_email", record)
+        self.assertEqual(self.record(OPEN), {"name": "req-open"})
+
+    async def test_a_taken_name_gets_the_next_one(self):
+        self.taken = {"req-security-updates-2-composer"}
+        result = await self.call(title="Security updates: 2 Composer advisories (guzzlehttp/guzzle)")
+        self.assertEqual(result["name"], "req-security-updates-2-composer-2")
+        self.assertEqual([c[1]["name"] for c in self.calls], ["req-security-updates-2-composer", "req-security-updates-2-composer-2"])
+
+    async def test_a_slack_failure_is_the_tools_error_and_records_nothing(self):
+        async def refuse(name, is_private):
+            raise RuntimeError("missing_scope")
+        self.conversations_create = refuse
+        with self.assertLogs("pm_bot.bot_channels", "ERROR"):
+            result = await self.call(title="Security updates")
+        self.assertIn("missing_scope", result["error"])
+        with open(os.path.join(DATA, "bot-channels.json")) as fh:
+            self.assertEqual(list(json.load(fh)), [OPEN])
+
+    async def test_the_new_channel_is_admitted_with_a_trusted_line_naming_no_requester(self):
+        await self.call(title="Security updates")
+        calls = []
+        app, adapter = App(), Adapter(calls)
+        plugin.factory(app, adapter)
+        passed = []
+
+        async def next_():
+            passed.append(True)
+
+        await app.run(body={"team_id": "T1", "event": message("CAUDIT", ts="3.3", text="who updates this?")},
+                      next=next_, client=Client(calls))
+        self.assertEqual(passed, [True])
+        self.assertIn("CAUDIT", adapter._slack_allowed_channels())
+        self.assertIn("Its requester's e-mail address: none.", adapter.config.extra["channel_prompts"]["CAUDIT"])
 
 
 if __name__ == "__main__":

@@ -4,14 +4,17 @@
 #   1. checks the required env (from the data directory's .env) and names what is missing;
 #   2. renders config.yaml and SOUL.md, with the skill's host context, from the env (render.mjs);
 #   3. puts the shipped skills (bb-create-ticket, its recipes and their method
-#      skills, with the bundle files they link to) and the bot-channels plugin into the data
-#      directory, replacing them, and removes the retired project-manager skill; sessions,
-#      memories, learned skills, the poller state and the bot's channel list stay;
-#   4. runs the poller and the Hermes gateway. When either exits, the container exits and
+#      skills, with the bundle files they link to, and the bot's own composer-audit, rendered
+#      like the persona) and the bot-channels plugin into the data directory, replacing them,
+#      and removes the retired project-manager skill; sessions, memories, learned skills, the
+#      poller state and the bot's channel list stay;
+#   4. registers the nightly composer-audit cron job by name (README.md › The nightly Composer
+#      audit), or removes it with AUDIT_ENABLED=false;
+#   5. runs the poller and the Hermes gateway. When either exits, the container exits and
 #      its restart policy starts it again.
 #
 #   entrypoint.sh [run]   start the bot (the image's default)
-#   entrypoint.sh check   steps 1-3, then print the versions, shipped skills and plugins, assert the
+#   entrypoint.sh check   steps 1-4, then print the versions, shipped skills and plugins, assert the
 #                         Hermes internals the plugin relies on, test the connection to
 #                         bakers.build's MCP endpoint and exit (CI's image check)
 set -euo pipefail
@@ -54,12 +57,69 @@ for src in "$BOT/skills"/* "$BOT/skills"/.claude-plugin; do
   [ -f "$src/SKILL.md" ] && shipped+=("${src##*/}")
 done
 rm -rf "$DATA/skills/project-manager"
+# The bot's own skill names the project and workflow.
+node "$BOT/render.mjs" "$BOT/skills/composer-audit/SKILL.md" "$DATA/skills/composer-audit/SKILL.md"
 # The bot's plugin, replaced on every start.
 mkdir -p "$DATA/plugins"
 rm -rf "$DATA/plugins/bot-channels.new"
 cp -R "$BOT/plugins/bot-channels" "$DATA/plugins/bot-channels.new"
 rm -rf "$DATA/plugins/bot-channels"
 mv "$DATA/plugins/bot-channels.new" "$DATA/plugins/bot-channels"
+
+# The nightly composer-audit job, kept to one by its name. Hermes' cron CLI writes the job store
+# directly; the gateway's scheduler runs it. The first line lists the jobs' IDs, the second the
+# first job's schedule. A missing store has no jobs; an unreadable one is named, and the start
+# leaves it and the job alone, so it never adds a second job beside one it cannot see.
+audit_store_ok=true
+audit_store="$(node -e '
+  const fs = require("fs");
+  if (!fs.existsSync(process.argv[1])) process.exit(0);
+  try {
+    const jobs = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).jobs.filter((job) => job.name === "composer-audit");
+    console.log(jobs.map((job) => job.id).join(" "));
+    console.log(jobs[0]?.schedule?.expr ?? "");
+  } catch (error) {
+    console.error(`pm-bot: cannot read the cron job store: ${error.message}`);
+    process.exit(2);
+  }' "$DATA/cron/jobs.json")" || audit_store_ok=false
+read -r -a audit_jobs <<<"$(sed -n 1p <<<"$audit_store")"
+audit_scheduled="$(sed -n 2p <<<"$audit_store")"
+case "${AUDIT_ENABLED:-true}" in
+  false|0|no|off)
+    # Off is logged only when no job is left; a store it cannot read or a job it cannot remove is named.
+    audit_off="$audit_store_ok"
+    for job in "${audit_jobs[@]}"; do
+      hermes cron remove "$job" >/dev/null || { echo "pm-bot: cannot remove cron job $job" >&2; audit_off=false; }
+    done
+    if [ "$audit_off" = true ]; then
+      echo "pm-bot: the nightly composer audit is off (AUDIT_ENABLED=${AUDIT_ENABLED})"
+    else
+      echo "pm-bot: AUDIT_ENABLED=${AUDIT_ENABLED}, but composer-audit may still run: fix or remove $DATA/cron/jobs.json and restart" >&2
+    fi ;;
+  *)
+    # The nightly audit's time, HH:MM in the container's time zone (TZ); read only when it runs.
+    AUDIT_TIME="${AUDIT_TIME:-03:30}"
+    [[ "$AUDIT_TIME" =~ ^([01][0-9]|2[0-3]):([0-5][0-9])$ ]] \
+      || { echo "pm-bot: AUDIT_TIME must be HH:MM between 00:00 and 23:59, not $AUDIT_TIME" >&2; exit 1; }
+    audit_schedule="$((10#${BASH_REMATCH[2]})) $((10#${BASH_REMATCH[1]})) * * *"
+    if [ "$audit_store_ok" = false ]; then
+      echo "pm-bot: composer-audit is not registered: fix or remove $DATA/cron/jobs.json and restart" >&2
+    else
+      audit_prompt="Run the nightly Composer security audit of the project's clone with your skill composer-audit, exactly as it says."
+      audit_args=(--name composer-audit --deliver "slack:$SLACK_ALLOWED_CHANNELS" --skill composer-audit)
+      for job in "${audit_jobs[@]:1}"; do hermes cron remove "$job" >/dev/null || true; done
+      if [ ${#audit_jobs[@]} -gt 0 ]; then
+        # A schedule passed to Hermes recomputes the due time from now, so a night missed while the
+        # container was down would never catch up: it is passed only when AUDIT_TIME changed.
+        audit_reschedule=()
+        [ "$audit_scheduled" = "$audit_schedule" ] || audit_reschedule=(--schedule "$audit_schedule")
+        hermes cron edit "${audit_jobs[0]}" "${audit_args[@]}" "${audit_reschedule[@]}" --prompt "$audit_prompt" >/dev/null
+      else
+        hermes cron create "${audit_args[@]}" "$audit_schedule" "$audit_prompt" >/dev/null
+      fi && echo "pm-bot: composer-audit at $audit_schedule (${TZ:-UTC})" \
+        || echo "pm-bot: cannot register the composer-audit cron job; the nightly audit does not run" >&2
+    fi ;;
+esac
 
 if [ "$mode" = check ]; then
   version="$(hermes --version)"
@@ -79,6 +139,10 @@ manager = get_plugin_manager()
 manager.discover_and_load()
 ours = sorted(p.manifest.name for p in manager._plugins.values() if p.enabled and p.manifest.source == "user")
 print("plugins: " + ",".join(ours))
+from hermes_cli.config import load_config
+from hermes_cli.tools_config import _get_platform_tools
+for platform in ("cron", "slack"):
+    print(f"toolsets {platform}: " + ",".join(sorted(_get_platform_tools(load_config(), platform))))
 assert any(name == "bot-channels" for _, name in manager.get_platform_handler_factories("slack")), "bot-channels registered no Slack handler"
 assert inspect.iscoroutinefunction(SlackAdapter._handle_slack_message), "SlackAdapter._handle_slack_message is gone"
 for helper in ("_track_reacting_message", "_event_team_id"):

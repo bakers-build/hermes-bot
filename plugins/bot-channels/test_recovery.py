@@ -39,6 +39,9 @@ class Ctx:
     def register_platform_handler(self, platform, factory):
         pass
 
+    def register_tool(self, **_):
+        pass
+
 
 @unittest.skipIf(unattended is None, "Hermes is not importable")
 class RecoveryTest(unittest.TestCase):

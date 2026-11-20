@@ -14,9 +14,9 @@
 #   tests/e2e/run.sh up [IMAGE] [--real]   start and seed the stack for testing by hand, run no
 #                                          scenario; print the site's URL and login links. Needs a
 #                                          model key: talking to the bot by hand needs a real model.
-#   tests/e2e/run.sh chat [TICKET] ["<message>"]   talk to the bot as the requester (hermes chat):
-#                                          in a fresh request channel, or in TICKET's channel; the
-#                                          message goes with the channel's trusted line
+#   tests/e2e/run.sh chat [TICKET] ["<message>"]   a request channel in one window: a fresh one or
+#                                          TICKET's, with the poller's posts as they come; each line
+#                                          (the message first) goes to the bot as the requester's
 #   tests/e2e/run.sh slack                 follow the Slack calls the poller makes
 #   tests/e2e/run.sh agent <ticket> <script>   the stub agent's next run on <ticket> plays
 #                                          tests/e2e/agent/<script>.json (question, technical-problem, …)
@@ -311,19 +311,11 @@ NODE
       console.log(channel);
     ' "$OUT/data/bot-channels.json" "$email")"
     fi
-    # The channel's trusted line and the requester's prefix, as the gateway and the bot-channels
-    # plugin would add them; Hermes' CLI adds neither.
-    trusted="This is the request channel $channel. Its conversation link is https://e2e.slack.com/archives/$channel. Its ticket: $ticket. Its requester's e-mail address: $email. Answer in the language with ISO 639-1 code ${E2E_LANGUAGE:-de}."
-    prefix='[Requester | Slack user <@U0E2EREQ>]'
-    if [ $# -gt 0 ]; then
-      echo "Channel $channel. Later messages: start each with $prefix (another person: [Name | Slack user <@U…>])."
-      exec docker compose "${COMPOSE[@]}" exec -u hermes -w /opt/data pm-bot hermes chat -q "$trusted
-$prefix $*"
-    fi
-    # The channel in one window: the bot's posts as they come, and each typed line as a message.
+    # The channel in one window: the bot's posts as they come, and each typed line as a message;
+    # a message given here is the first.
     E2E_COMPOSE="$(printf '%s\n' "${COMPOSE[@]}" | node -e 'process.stdout.write(JSON.stringify(require("fs").readFileSync(0,"utf8").trim().split("\n")))')" \
       exec node "$E2E/lib/channel-chat.mjs" "http://127.0.0.1:$(dc port slack-recorder 80 | sed 's/.*://')" \
-      "$OUT/data/poller-state.json" "$channel" "$ticket" "$email" "${E2E_LANGUAGE:-de}"
+      "$OUT/data/poller-state.json" "$channel" "$ticket" "$email" "${E2E_LANGUAGE:-de}" "$*"
     ;;
   slack)
     load_stack

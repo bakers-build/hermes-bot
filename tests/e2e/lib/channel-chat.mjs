@@ -5,7 +5,7 @@
 // the bot-channels plugin puts before each turn and the sender's prefix, and its reply is shown.
 // The turns share one Hermes session. No dependencies.
 //
-//   E2E_COMPOSE='["-p", …]' node channel-chat.mjs <recorder url> <poller-state.json> <channel> <ticket|none yet> <email> <language>
+//   E2E_COMPOSE='["-p", …]' node channel-chat.mjs <recorder url> <poller-state.json> <channel> <ticket|none yet> <email> <language> [first message]
 
 import { spawn } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
@@ -73,7 +73,7 @@ function hermes(compose, query, session) {
 }
 
 async function main() {
-  const [recorder, stateFile, channel, given, email, language] = process.argv.slice(2);
+  const [recorder, stateFile, channel, given, email, language, first] = process.argv.slice(2);
   const compose = JSON.parse(process.env.E2E_COMPOSE ?? '[]');
   // The ticket named on the command line, else the channel's as the plugin reads it, from the
   // poller's state once the poller follows one.
@@ -133,6 +133,10 @@ async function main() {
   let pending = follow().then(() => {
     busy = false;
   });
+  if (first?.trim()) {
+    console.log(`you> ${first.trim()}`);
+    pending = pending.then(() => send(first.trim()));
+  }
   const timer = setInterval(follow, 2000);
   rl.on('line', (line) => {
     const text = line.trim();

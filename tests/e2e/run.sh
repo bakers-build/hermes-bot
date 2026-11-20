@@ -320,15 +320,10 @@ NODE
       exec docker compose "${COMPOSE[@]}" exec -u hermes -w /opt/data pm-bot hermes chat -q "$trusted
 $prefix $*"
     fi
-    cat <<TEXT
-Hermes adds no Slack context here. Start with the request: ddev e2e chat "<your request>" (or
-tests/e2e/run.sh chat "…"). Or paste these two lines as your first message:
-
-$trusted
-$prefix <your request>
-
-TEXT
-    exec docker compose "${COMPOSE[@]}" exec -u hermes -w /opt/data pm-bot hermes chat
+    # The channel in one window: the bot's posts as they come, and each typed line as a message.
+    E2E_COMPOSE="$(printf '%s\n' "${COMPOSE[@]}" | node -e 'process.stdout.write(JSON.stringify(require("fs").readFileSync(0,"utf8").trim().split("\n")))')" \
+      exec node "$E2E/lib/channel-chat.mjs" "http://127.0.0.1:$(dc port slack-recorder 80 | sed 's/.*://')" \
+      "$OUT/data/poller-state.json" "$channel" "$ticket" "$email" "${E2E_LANGUAGE:-de}"
     ;;
   slack)
     load_stack

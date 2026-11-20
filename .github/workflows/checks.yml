@@ -26,9 +26,9 @@ jobs:
           python3 -m unittest discover -s plugins/bot-channels
           bash tests/contract/pm-bot.sh
   image:
-    # Builds the image, smoke-tests that same image, and publishes it from main only.
+    # Builds the image, smoke-tests and end-to-end-tests that same image, and publishes it from main only.
     runs-on: ${{ fromJSON(vars.RUNNER_IMAGE || '"ubuntu-latest"') }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     permissions:
       contents: read
       packages: write
@@ -48,6 +48,20 @@ jobs:
             --build-context mattpocock=https://github.com/mattpocock/skills.git#d1478fcb140db0b93c0c8df17bcfd311844749d0 .
       - name: Smoke-test the image
         run: bash tests/contract/pm-bot-image.sh "$IMAGE:$GITHUB_SHA"
+      # The same image against a bakers.build site, a conductor, a scripted model and a Slack
+      # recorder (tests/e2e/run.sh); no credentials. tests/contract/pm-bot.sh checks this line.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: End-to-end test
+        run: bash tests/e2e/run.sh "$IMAGE:$GITHUB_SHA"
+      - name: Keep the end-to-end test's logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs
+          path: tests/e2e/out/logs/
+          if-no-files-found: ignore
       - name: Publish
         if: github.event_name == 'push'
         env:

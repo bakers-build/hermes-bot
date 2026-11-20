@@ -8,3 +8,9 @@
 /.bakers/*.frozen.json
 /.bakers-worktrees/
 /.bakers/*.bootstrapped.json
+# The end-to-end test's run directory: the stack's data, seed keys and failure logs.
+/tests/e2e/out/
+# The ddev stack's data, seed keys and logs (.ddev/).
+/tests/e2e/ddev-out/
+# The model key for the ddev stack (ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN).
+/.ddev/.env.e2e

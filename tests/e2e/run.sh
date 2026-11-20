@@ -303,9 +303,10 @@ NODE
       const [file, email] = process.argv.slice(1);
       let bot = {};
       try { bot = JSON.parse(fs.readFileSync(file, "utf8")); } catch {}
-      const n = Object.keys(bot).filter((id) => id.startsWith("C0HAND")).length + 1;
-      const channel = `C0HAND${String(n).padStart(5, "0")}`;
-      bot[channel] = { name: `req-hand-test-${n}`, requester: "U0E2EREQ", created: new Date().toISOString(), requester_email: email };
+      // Unique by time: a count of this file reused an earlier channel, and with it its ticket.
+      const n = Date.now().toString(36).toUpperCase();
+      const channel = `C0HAND${n}`;
+      bot[channel] = { name: `req-hand-test-${n.toLowerCase()}`, requester: "U0E2EREQ", created: new Date().toISOString(), requester_email: email };
       fs.writeFileSync(file, JSON.stringify(bot, null, 2));
       console.log(channel);
     ' "$OUT/data/bot-channels.json" "$email")"

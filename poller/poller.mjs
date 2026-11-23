@@ -79,6 +79,16 @@ export function hermesSend({ channel, thread_ts, text }) {
   });
 }
 
+// The relay's way out, by where the poller's Slack is: Slack itself (no SLACK_API_URL) through
+// hermes send, which mirrors into the channel's gateway session; another Slack API, which hermes send
+// cannot reach, through the poller's own Slack client. That one has no gateway session to mirror into.
+export function relaySender({ slackApiUrl, slack, hermes = hermesSend }) {
+  if (!slackApiUrl) return hermes;
+  return async ({ channel, thread_ts, text }) => {
+    await slack.post({ channel, thread_ts, text });
+  };
+}
+
 /**
  * @param {{client: ReturnType<typeof createBakersClient>, slack: ReturnType<typeof createSlack>,
  *   send: (message: {comment: string, kind: 'question' | 'technical_problem', identifier: string, channel: string, thread_ts?: string, text: string}) => Promise<void>,
@@ -387,10 +397,11 @@ if (isMain) {
     if (!value) throw new Error(`${name} is not set`);
     return value;
   };
+  const slack = createSlack({ url: process.env.SLACK_API_URL || undefined, token: env('SLACK_BOT_TOKEN') });
   const poller = createPoller({
     client: createBakersClient({ url: env('BAKERS_URL'), apiKey: env('BAKERS_API_KEY') }),
-    slack: createSlack({ url: process.env.SLACK_API_URL || undefined, token: env('SLACK_BOT_TOKEN') }),
-    send: hermesSend,
+    slack,
+    send: relaySender({ slackApiUrl: process.env.SLACK_API_URL, slack }),
     stateFile: join(env('HERMES_HOME'), 'poller-state.json'),
     botChannelsFile: join(env('HERMES_HOME'), 'bot-channels.json'),
     languageFile: join(env('HERMES_HOME'), 'bot-language.json'),

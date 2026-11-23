@@ -1,0 +1,159 @@
+# The end-to-end test's stack, loaded on top of the production compose.yaml by tests/e2e/run.sh:
+#   docker compose -p <project> -f compose.yaml -f tests/e2e/compose.yaml ...
+# pm-bot is production's service; this file changes only its mode, network and start order
+# (tests/contract/pm-bot.sh checks it). Beside it: a bakers.build site from the published release
+# images (adapted from bakers.build's docker/compose/docker-compose.yml), a conductor with a stub
+# agent, a scripted model and a Slack recorder. Nothing here is a credential.
+#
+# Variables run.sh sets: PM_BOT_IMAGE, PM_BOT_DATA, PM_BOT_CLONE, PM_BOT_UID, PM_BOT_GID (the
+# production file's), BAKERS_VERSION, E2E_AGENT (the stub's script directory), E2E_CONDUCTOR (the
+# conductor's home) and E2E_CONDUCTOR_AGENT (stub or claude). Relative paths are the repository
+# root's, as compose resolves them against the first file.
+
+x-bakers-app: &bakers-app
+  image: ghcr.io/bakers-build/bakers-build/php:${BAKERS_VERSION:-0.11.0}
+  # The release images are built for amd64 only; elsewhere they run emulated.
+  platform: linux/amd64
+  depends_on:
+    init-perms:
+      condition: service_completed_successfully
+    db:
+      condition: service_healthy
+  volumes:
+    - public_files:/var/www/html/web/sites/default/files
+    - private_files:/var/www/html/private-files
+    - tmp_files:/tmp
+    - oauth_keys:/var/www/oauth-keys
+
+x-bakers-env: &bakers-env
+  DB_HOST: db
+  DB_NAME: bakers
+  DB_USER: bakers
+  DB_PASSWORD: e2e-db
+  DB_DRIVER: mysql
+  DB_PORT: "3306"
+  # The one host name the site answers to.
+  DOMAIN: nginx
+  DRUPAL_HASH_SALT: e2e-hash-salt-not-a-secret-0000000000000000
+  TRUSTED_PROXY_SUBNET: ""
+  # Nothing is mailed: the site refuses to start without an SMTP URL, and none listens there.
+  MAIL_SMTP_DSN: smtp://127.0.0.1:1025
+  MAIL_FROM_ADDRESS: bakers@e2e.test
+  FEATURE_FLAG_RUN_LOG_STORAGE: "0"
+  ADMIN_EMAIL: admin@e2e.test
+
+services:
+  pm-bot:
+    command: [agent]
+    depends_on: [nginx, model, slack-recorder]
+
+  init-perms:
+    image: alpine:3.22.2
+    command: sh -c "chown -R 1000:1000 /pf /privf /oauthkeys && chown 1000:1000 /tmpdir && chmod 1777 /tmpdir"
+    volumes:
+      - public_files:/pf
+      - private_files:/privf
+      - tmp_files:/tmpdir
+      - oauth_keys:/oauthkeys
+    restart: "no"
+
+  db:
+    image: wodby/mariadb:10.11-3.30.1
+    environment:
+      MYSQL_ROOT_PASSWORD: e2e-root
+      MYSQL_DATABASE: bakers
+      MYSQL_USER: bakers
+      MYSQL_PASSWORD: e2e-db
+    volumes:
+      - db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  # Installs the empty database on the first start; php waits for it.
+  deploy:
+    <<: *bakers-app
+    restart: "no"
+    environment: *bakers-env
+    command: /var/www/html/scripts/deploy/site-deploy.sh
+
+  php:
+    <<: *bakers-app
+    depends_on:
+      deploy:
+        condition: service_completed_successfully
+    environment:
+      <<: *bakers-env
+      PHP_FPM_USER: wodby
+      PHP_FPM_GROUP: wodby
+      PHP_FPM_CLEAR_ENV: "no"
+    volumes:
+      - public_files:/var/www/html/web/sites/default/files
+      - private_files:/var/www/html/private-files
+      - tmp_files:/tmp
+      - oauth_keys:/var/www/oauth-keys
+      - ./tests/e2e/seed.php:/e2e/seed.php:ro
+
+  nginx:
+    image: ghcr.io/bakers-build/bakers-build/nginx:${BAKERS_VERSION:-0.11.0}
+    platform: linux/amd64
+    depends_on: [php]
+    environment:
+      NGINX_BACKEND_HOST: php
+      NGINX_SERVER_ROOT: /var/www/html/web
+      NGINX_VHOST_PRESET: drupal10
+      NGINX_STATIC_OPEN_FILE_CACHE: "off"
+      NGINX_SERVER_EXTRA_CONF_FILEPATH: /etc/nginx/oauth-discovery.conf
+    volumes:
+      - public_files:/var/www/html/web/sites/default/files
+    # The test reaches the site from the host with Host: nginx.
+    ports:
+      - 127.0.0.1::80
+
+  # The conductor of the seeded project: the bakers.build CLI with a stub agent that plays the
+  # script the test leaves for a ticket (tests/e2e/agent), or Claude Code (E2E_CONDUCTOR_AGENT claude).
+  conductor:
+    build:
+      context: ./tests/e2e/conductor
+      args:
+        AGENT: ${E2E_CONDUCTOR_AGENT:-stub}
+    depends_on: [nginx]
+    # The host's user, like pm-bot's: what it writes to tests/e2e/out stays removable.
+    user: ${PM_BOT_UID}:${PM_BOT_GID}
+    environment:
+      HOME: /home/conductor
+      BAKERS_URL: http://nginx
+      # The executor's run logs, beside the login in the conductor's home.
+      E2E_LOG_DIR: /home/conductor/log
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+    volumes:
+      - ${E2E_CONDUCTOR}:/home/conductor
+      # The stub marks a script played.
+      - ${E2E_AGENT}:/e2e/agent
+
+  model:
+    image: node:22-slim
+    command: [node, /srv/model.mjs]
+    volumes:
+      - ./tests/e2e/model:/srv:ro
+    ports:
+      - 127.0.0.1::80
+
+  slack-recorder:
+    image: node:22-slim
+    command: [node, /srv/recorder.mjs]
+    volumes:
+      - ./tests/e2e/slack-recorder:/srv:ro
+    ports:
+      - 127.0.0.1::80
+
+volumes:
+  db:
+  public_files:
+  private_files:
+  tmp_files:
+  oauth_keys:

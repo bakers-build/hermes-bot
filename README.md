@@ -76,7 +76,7 @@ docker build -t pm-bot:local \
   --build-context mattpocock=https://github.com/mattpocock/skills.git#d1478fcb140db0b93c0c8df17bcfd311844749d0 .
 ```
 
-GitHub CI runs the first two in `pm_bot` and the third in `image_gate`; the release then publishes the image to GHCR (the template's README › PM bot › The bot's version).
+GitHub CI runs the first three in its `tests` job; its `image` job builds the image, smoke-tests it and runs the end-to-end test on it; the release then publishes the image to GHCR (the template's README › PM bot › The bot's version).
 
 ## End-to-end test
 
@@ -90,7 +90,7 @@ GitHub CI runs the first two in `pm_bot` and the third in `image_gate`; the rele
 | `model` | A scripted Anthropic Messages endpoint (`model.base_url` from `PM_BOT_MODEL_BASE_URL`): each scenario scripts the bot's tool calls, and a call it did not script fails the scenario |
 | `slack-recorder` | The Slack Web API methods the poller calls (`SLACK_API_URL`), answered and recorded |
 
-The scenarios (`tests/e2e/scenarios/`) assert what the site and the recorder hold, never wording. `--only <file>` runs one file, `--keep` leaves the stack running (`bash tests/e2e/run.sh down` removes it), `--real` uses a real model for the bot and Claude Code for the conductor (`ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`; a failure may then be the model's). A failed run leaves the stack's logs, the model's turns, the Slack calls and the poller's state in `tests/e2e/out/logs/`.
+The scenarios (`tests/e2e/scenarios/`) assert what the site and the recorder hold, never wording. `--only <scenario>` runs one scenario file, named without `.e2e.mjs` (e.g. `--only questions`), `--keep` leaves the stack running (`bash tests/e2e/run.sh down` removes it), `--real` uses a real model for the bot and Claude Code for the conductor (`ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`; a failure may then be the model's). A failed run leaves the stack's logs, the model's turns, the Slack calls and the poller's state in `tests/e2e/out/logs/`.
 
 ## Test it by hand
 

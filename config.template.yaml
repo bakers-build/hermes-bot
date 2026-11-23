@@ -91,9 +91,10 @@ approvals:
     - "env"
     - "env *"
     - "*printenv*"
-    # environ as a whole word at the end (/proc/<pid>/environ); environment_indicator stays readable.
+    # environ followed by nothing or by anything but a name character (/proc/<pid>/environ, in
+    # backticks, braces or before a shell operator); environment_indicator stays readable.
     - "*environ"
-    - '*environ[ ;|&)''"<>]*'
+    - "*environ[!a-z_]*"
     - "export"
     - "export *"
     - "set"
@@ -105,7 +106,8 @@ approvals:
     # path with a php-named directory (/srv/phpmailer/x) is still refused.
     - "curl*"
     - '*[ ;|&(`''"]curl'
-    - '*[ ;|&(`''"]curl *'
+    # curl followed by anything but a name character or a slash, so the package curl/curl stays readable.
+    - '*[ ;|&(`''"]curl[!a-z_/-]*'
     - "/*/curl*"
     - "*/bin/curl*"
     - "*wget*"
@@ -124,8 +126,8 @@ approvals:
     - '*"php[0-9].[0-9]*'
     - '*"php.default*'
     - "/*/php*"
-    # bin/php followed by anything but a name character (a space, dot, digit, quote or shell
-    # operator), so a relative directory like ./bin/phpstuff stays readable.
+    # bin/php followed by anything but a letter, _ or - (a slash too, so ./bin/php/x is refused),
+    # so a relative directory like ./bin/phpstuff or ./bin/php-cs-fixer stays readable.
     - "*/bin/php"
     - "*/bin/php[!a-z_-]*"
 

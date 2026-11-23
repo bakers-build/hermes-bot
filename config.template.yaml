@@ -116,11 +116,15 @@ approvals:
     - "php*"
     - '*[ ;|&(`''"]php'
     - "*[ ;|&(`']php[ .0-9]*"
-    # After a double quote only php itself, with or without a version: "php81_bc/... is a package.
+    # After a double quote only php itself, with or without a version or Debian's .default
+    # suffix: "php81_bc/... is a package.
     - '*"php *'
+    - '*"php"*'
     - '*"php[0-9].[0-9]*'
+    - '*"php.default*'
     - "/*/php*"
-    - "*/bin/php*"
+    - "*/bin/php"
+    - "*/bin/php[ .0-9]*"
 
 # The cron job's answer goes into the main channel as written: one line, or nothing on
 # [SILENT]. A night the container was down catches up when it starts within two hours (Hermes'

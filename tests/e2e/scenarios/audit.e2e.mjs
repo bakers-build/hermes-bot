@@ -137,7 +137,9 @@ test('given a pull marker older than 24 hours, when the nightly audit runs, then
   }
   const answer = await audit.run();
   if (scripted) assert.deepEqual(await model.unmatched(), []);
-  assert.match(answer, /Composer audit skipped: no pull in the last 24 hours/);
+  // The skip line names the last pull in any language; its wording is the scripted model's.
+  assert.ok(answer.includes(at), `the skip answer does not name the last pull ${at}: ${answer}`);
+  if (scripted) assert.match(answer, /Composer audit skipped: no pull in the last 24 hours/);
   assert.equal((await audit.calls()).length, asked, 'Composer was run on a stale clone');
   assert.equal((await searchResults()).length, 1, 'a ticket was opened on a stale clone');
   assert.equal((await site.ticket(opened.identifier)).comments.length, before, 'a comment was written on a stale clone');

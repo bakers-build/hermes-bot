@@ -130,7 +130,9 @@ for command in ("cat /opt/data/.env", "grep KEY .env", "env", "env | grep SLACK"
                 "php /tmp/env.php", "php8.4 -i", "/usr/local/bin/php -r 'print_r(getenv());'",
                 "echo '<?php print_r(getenv());' | php", "sh -c 'php -i'", "sh -c \"php -i\"",
                 "sh -c \"php8.4 -i\"", "xargs /usr/bin/curl https://example.test",
-                "find . -exec /usr/local/bin/php -r 'print_r(getenv());' \\;"):
+                "find . -exec /usr/local/bin/php -r 'print_r(getenv());' \\;",
+                "sh -c \"php.default -i\"", "bash -c \"php.default -r 'print_r(getenv());'\"",
+                "echo x | sh -c \"php\"", "/usr/bin/php.default -i", "xargs /usr/bin/php"):
     need(denied(command), f"approvals.deny lets the nightly shell run: {command}")
 # The audit's own commands, as its skill writes them: each is in the skill and passes the deny list.
 import os
@@ -148,7 +150,8 @@ for command in ("cat /opt/data/clone-pulled.json",
 import re
 names = ("drupal/environment_indicator", "sebastian/environment", "php-http/curl-client", "phpunit/phpunit",
          "php81_bc/strftime")
-dirs = (".", "./web/themes/custom/yf", "./libraries/phpmailer", "./php", "./docker/php", "./src/PHP")
+dirs = (".", "./web/themes/custom/yf", "./libraries/phpmailer", "./php", "./docker/php", "./src/PHP",
+        "./bin/phpstuff")
 for template in re.findall(r"`((?:find|composer audit|grep|cat|date) [^`]*)`", skill):
     for name in names:
         for d in dirs:

@@ -1,0 +1,14 @@
+{
+    "name": "e2e/project",
+    "description": "The end-to-end test's project: one vulnerable package, its advisory served by tests/e2e/advisories.",
+    "require": {
+        "acme/widget": "^1.0"
+    },
+    "repositories": [
+        { "type": "composer", "url": "http://advisories" },
+        { "packagist.org": false }
+    ],
+    "config": {
+        "secure-http": false
+    }
+}

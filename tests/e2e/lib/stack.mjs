@@ -7,13 +7,14 @@
 //   slack       the Slack calls the poller made, from the recorder
 //   agent       the stub agent's script for a ticket's next run
 //   channel     a request channel as the bot-channels plugin records it, for the poller
+//   audit       the nightly composer-audit job: the clone and pull marker it reads, a run, its answer
 //   restart     a service of the stack
 //
 // run.sh exports E2E_COMPOSE (the compose arguments, project and files), E2E_OUT (the run's
 // directory, with seed.json) and E2E_MODE (scripted or real).
 
 import { execFile } from 'node:child_process';
-import { copyFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { join } from 'node:path';
 
@@ -159,6 +160,45 @@ export function channel(id, { requester = 'U0E2EREQ', email = seed.requester_ema
   renameSync(`${file}.tmp`, file);
   return { id, link: `${WORKSPACE_URL}/archives/${id}` };
 }
+
+export const audit = {
+  /**
+   * The clone as the box leaves it after a pull: the fixture project (tests/e2e/clone, its one
+   * advisory served by tests/e2e/advisories) and the pull marker, `at` hours ago.
+   */
+  pulled({ hoursAgo = 1, ok = true, head = 'e2e0000' } = {}) {
+    cpSync(new URL('../clone/', import.meta.url), join(OUT, 'clone'), { recursive: true });
+    const at = new Date(Date.now() - hoursAgo * 3_600_000).toISOString().replace(/\.\d+Z$/, 'Z');
+    writeFileSync(join(OUT, 'data', 'clone-pulled.json.tmp'), JSON.stringify({ at, head, ok }));
+    renameSync(join(OUT, 'data', 'clone-pulled.json.tmp'), join(OUT, 'data', 'clone-pulled.json'));
+    return { at, head };
+  },
+  /** The job once entrypoint.sh has registered it, on the bot's start. */
+  job() {
+    return waitFor('the composer-audit job registered', () => {
+      const jobs = JSON.parse(readFileSync(join(OUT, 'data', 'cron', 'jobs.json'), 'utf8')).jobs.filter((job) => job.name === 'composer-audit');
+      if (jobs.length > 1) throw new Error(`${jobs.length} composer-audit jobs, not one`);
+      return jobs[0];
+    });
+  },
+  /** Runs the job now, as its schedule would, and returns the run's saved output (its answer, delivered locally). */
+  async run() {
+    const { id } = await audit.job();
+    const dir = join(OUT, 'data', 'cron', 'output', id);
+    const outputs = () => { try { return readdirSync(dir).filter((f) => f.endsWith('.md')).sort(); } catch { return []; } };
+    const before = new Set(outputs());
+    const hermes = (...args) => compose(['exec', '-T', '-u', 'hermes', '-w', '/opt/data', 'pm-bot', 'hermes', ...args]);
+    // Hermes' own Slack sender calls slack.com, which the stack has no token for: its preflight would
+    // block the run. The answer stays in the job's output instead of the main channel.
+    await hermes('cron', 'edit', id, '--deliver', 'local');
+    await hermes('cron', 'run', 'composer-audit');
+    const added = outputs().filter((f) => !before.has(f));
+    if (added.length !== 1) throw new Error(`the run saved ${added.length} outputs in ${dir}`);
+    return readFileSync(join(dir, added[0]), 'utf8');
+  },
+  /** The packages Composer asked the advisory stub about, per call. */
+  calls: async () => JSON.parse((await http('advisories', 'GET', '/_calls')).text),
+};
 
 /**
  * One turn to the bot, as the gateway hands it on in a request channel: the channel's trusted

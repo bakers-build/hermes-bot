@@ -89,12 +89,16 @@ async def _open_channel(client, text, record):
 
 class _SlackWebClient:
     """The Slack calls the cron tool makes, with the bot token. Hermes' Bolt client belongs to the
-    gateway's event loop, which a cron run does not share."""
+    gateway's event loop, which a cron run does not share. Its Slack is the poller's: Slack itself,
+    or SLACK_API_URL when set (the end-to-end test's recorder)."""
 
     def __init__(self):
         from slack_sdk import WebClient
 
-        self.web = WebClient(token=os.environ.get("SLACK_BOT_TOKEN") or "")
+        options = {"token": os.environ.get("SLACK_BOT_TOKEN") or ""}
+        if os.environ.get("SLACK_API_URL"):
+            options["base_url"] = os.environ["SLACK_API_URL"].rstrip("/") + "/"
+        self.web = WebClient(**options)
 
     async def conversations_create(self, **kwargs):
         return await asyncio.to_thread(self.web.conversations_create, **kwargs)

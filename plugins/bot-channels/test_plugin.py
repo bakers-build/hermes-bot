@@ -31,6 +31,8 @@ _spec = importlib.util.spec_from_file_location("bot_channels", HERE / "__init__.
 plugin = importlib.util.module_from_spec(_spec)
 sys.modules["bot_channels"] = plugin
 _spec.loader.exec_module(plugin)
+# The real client factory; OpenRequestChannelTool replaces it with a fake.
+SLACK_CLIENT = plugin._slack_client
 
 
 class Outcome(enum.Enum):  # Hermes' ProcessingOutcome
@@ -317,6 +319,51 @@ class OpenRequestChannelTool(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(passed, [True])
         self.assertIn("CAUDIT", adapter._slack_allowed_channels())
         self.assertIn("Its requester's e-mail address: none.", adapter.config.extra["channel_prompts"]["CAUDIT"])
+
+
+class OpenRequestChannelToolSlack(unittest.IsolatedAsyncioTestCase):
+    """Where the tool's Slack calls go: Slack, or the Slack the poller also uses (SLACK_API_URL)."""
+
+    def setUp(self):
+        os.environ.update(SLACK_ALLOWED_CHANNELS=HOME, SLACK_ALLOWED_USERS="U1", SLACK_BOT_TOKEN="xoxb-test",
+                          SLACK_WORKSPACE_URL="https://acme.slack.com/")
+        self.addCleanup(os.environ.pop, "SLACK_API_URL", None)
+        self.clients = []
+        test = self
+
+        class WebClient:  # slack_sdk's
+            def __init__(self, **kwargs):
+                test.clients.append(kwargs)
+
+            def conversations_create(self, **_):
+                return {"channel": {"id": "CAUDIT"}}
+
+        sdk = unittest.mock.patch.dict(sys.modules["slack_sdk"].__dict__, {"WebClient": WebClient})
+        sdk.start()
+        self.addCleanup(sdk.stop)
+        stubs = unittest.mock.patch.dict(sys.modules, {
+            "gateway": types.ModuleType("gateway"),
+            "gateway.session_unattended_unknown": types.ModuleType("gateway.session_unattended_unknown")})
+        stubs.start()
+        self.addCleanup(stubs.stop)
+        self.ctx = Context()
+        plugin.register(self.ctx)
+        client = unittest.mock.patch.object(plugin, "_slack_client", SLACK_CLIENT)
+        client.start()
+        self.addCleanup(client.stop)
+
+    async def call(self):
+        return json.loads(await self.ctx.tools["open_request_channel"]["handler"]({"title": "Security updates"}))
+
+    async def test_without_slack_api_url_it_calls_slack_with_the_bot_token(self):
+        os.environ.pop("SLACK_API_URL", None)
+        self.assertEqual((await self.call())["channel"], "CAUDIT")
+        self.assertEqual(self.clients, [{"token": "xoxb-test"}])
+
+    async def test_with_slack_api_url_it_calls_that_slack_like_the_poller(self):
+        os.environ["SLACK_API_URL"] = "http://slack-recorder/api"
+        self.assertEqual((await self.call())["channel"], "CAUDIT")
+        self.assertEqual(self.clients, [{"token": "xoxb-test", "base_url": "http://slack-recorder/api/"}])
 
 
 if __name__ == "__main__":

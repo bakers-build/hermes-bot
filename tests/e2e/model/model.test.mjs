@@ -152,6 +152,17 @@ describe('scripted model', () => {
     assert.equal(answer.content[0].text, 'It is in working.');
   });
 
+  it('given a deferred plugin tool, when the reply names it, then the model calls it through tool_call', async () => {
+    const deferred = [
+      { name: 'tool_search', description: 'Deferred tool catalog:\nbakers tools (1):\n- mcp__bakers__tool_api__bakers_ticket_read: Reads a ticket\nbot-channels-cron tools (1):\n- open_request_channel: Open a public Slack request channel', input_schema: { type: 'object' } },
+      { name: 'tool_call', input_schema: { type: 'object' } },
+    ];
+    await script([{ user: 'audit', reply: [{ tool: 'open_request_channel', input: { title: 'Security updates' } }] }]);
+    const call = (await (await ask([{ role: 'user', content: 'audit' }], { tools: deferred })).json()).content[0];
+    assert.equal(call.name, 'tool_call');
+    assert.deepEqual(call.input, { calls: [{ name: 'open_request_channel', arguments: { title: 'Security updates' } }] });
+  });
+
   it('given a tool result Hermes escaped and wrapped, when a rule matches it, then it matches the plain text', async () => {
     await script([{ tool_result: '"state":\\s*"(?<state>\\w+)"', reply: [{ text: 'In {{state}}.' }] }]);
     const wrapped = '<untrusted_tool_result source="x">\n{"result": "Ticket read.\\n{\\n    \\"state\\": \\"qualification\\"\\n}"}</untrusted_tool_result>';

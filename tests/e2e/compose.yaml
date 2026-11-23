@@ -3,7 +3,8 @@
 # pm-bot is production's service; this file changes only its mode, network and start order
 # (tests/contract/pm-bot.sh checks it). Beside it: a bakers.build site from the published release
 # images (adapted from bakers.build's docker/compose/docker-compose.yml), a conductor with a stub
-# agent, a scripted model and a Slack recorder. Nothing here is a credential.
+# agent, a scripted model, a Slack recorder and a Composer repository serving one security
+# advisory. Nothing here is a credential.
 #
 # Variables run.sh sets: PM_BOT_IMAGE, PM_BOT_DATA, PM_BOT_CLONE, PM_BOT_UID, PM_BOT_GID (the
 # production file's), BAKERS_VERSION, E2E_AGENT (the stub's script directory), E2E_CONDUCTOR (the
@@ -45,7 +46,7 @@ x-bakers-env: &bakers-env
 services:
   pm-bot:
     command: [agent]
-    depends_on: [nginx, model, slack-recorder]
+    depends_on: [nginx, model, slack-recorder, advisories]
 
   init-perms:
     image: alpine:3.22.2
@@ -148,6 +149,16 @@ services:
     command: [node, /srv/recorder.mjs]
     volumes:
       - ./tests/e2e/slack-recorder:/srv:ro
+    ports:
+      - 127.0.0.1::80
+
+  # The Packagist of the clone fixture (tests/e2e/clone/composer.json): the nightly audit's
+  # `composer audit` asks it, and nothing outside, for advisories.
+  advisories:
+    image: node:22-slim
+    command: [node, /srv/advisories.mjs]
+    volumes:
+      - ./tests/e2e/advisories:/srv:ro
     ports:
       - 127.0.0.1::80
 

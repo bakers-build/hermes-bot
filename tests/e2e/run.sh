@@ -105,14 +105,17 @@ collect() {
   mkdir -p "$OUT/logs"
   dc logs --no-color --timestamps >"$OUT/logs/compose.log" 2>&1 || true
   local service port
-  for service in model slack-recorder; do
+  for service in model slack-recorder advisories; do
     port="$(dc port "$service" 80 2>/dev/null | sed 's/.*://')" || continue
     case "$service" in
       model) curl -fsS "http://127.0.0.1:$port/_log" >"$OUT/logs/model-turns.json" || true ;;
       slack-recorder) curl -fsS "http://127.0.0.1:$port/_calls" >"$OUT/logs/slack-calls.json" || true ;;
+      advisories) curl -fsS "http://127.0.0.1:$port/_calls" >"$OUT/logs/advisory-calls.json" || true ;;
     esac
   done
   cp "$OUT/data/poller-state.json" "$OUT/logs/" 2>/dev/null || true
+  # The nightly audit's runs: prompt, answer or error.
+  cp -R "$OUT/data/cron/output" "$OUT/logs/cron-output" 2>/dev/null || true
   say "logs in $OUT/logs"
 }
 

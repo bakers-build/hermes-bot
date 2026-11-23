@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // The end-to-end test's Slack: the Web API methods the poller calls, answered plausibly, every
-// call recorded. The poller reaches it through SLACK_API_URL (http://slack-recorder/api). No
-// Socket Mode, no workspace: the test talks to the bot through Hermes' CLI. No dependencies.
+// call recorded. The poller and the nightly audit's channel tool reach it through SLACK_API_URL
+// (http://slack-recorder/api), in JSON or as a form. No Socket Mode, no workspace: the test talks
+// to the bot through Hermes' CLI. No dependencies.
 //
 //   POST /api/<method>   chat.postMessage, conversations.create|invite|rename|archive|history
 //   GET  /_calls         every call: {method, token, body, at}
@@ -80,9 +81,10 @@ export function createRecorder() {
       res.writeHead(404);
       return res.end();
     }
+    // JSON from the poller, a form from slack_sdk (the plugin's channel tool), as Slack takes both.
     let body = {};
     try {
-      body = raw ? JSON.parse(raw) : {};
+      body = !raw ? {} : /x-www-form-urlencoded/.test(req.headers['content-type'] ?? '') ? Object.fromEntries(new URLSearchParams(raw)) : JSON.parse(raw);
     } catch {
       body = { raw };
     }

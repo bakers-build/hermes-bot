@@ -8,13 +8,15 @@
 //   agent       the stub agent's script for a ticket's next run
 //   channel     a request channel as the bot-channels plugin records it, for the poller
 //   audit       the nightly composer-audit job: the clone and pull marker it reads, a run, its answer
-//   restart     a service of the stack
+//   restart     a service of the stack; recreate one, which rereads its env file
+//   botLanguage PM_BOT_LANGUAGE in the bot's env file, the bot recreated and its language module started
+//   languageFile the language the poller reads, bot-language.json
 //
 // run.sh exports E2E_COMPOSE (the compose arguments, project and files), E2E_OUT (the run's
 // directory, with seed.json) and E2E_MODE (scripted or real).
 
 import { execFile } from 'node:child_process';
-import { copyFileSync, cpSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { join } from 'node:path';
 
@@ -232,6 +234,57 @@ export async function restart(service) {
   // A restarted container gets a new published port.
   delete ports[service];
   await waitFor(`${service} running`, async () => (await compose(['ps', '--status', 'running', '--services'])).stdout.split('\n').includes(service));
+}
+
+/**
+ * Recreates a service from its image, as `up` after a change to its env file does (a restart keeps
+ * the env it was created with), and waits until compose reports it running.
+ */
+export async function recreate(service) {
+  await compose(['up', '-d', '--no-deps', '--force-recreate', service]);
+  delete ports[service];
+  await waitFor(`${service} running`, async () => (await compose(['ps', '--status', 'running', '--services'])).stdout.split('\n').includes(service));
+}
+
+/** The language the poller reads, as the plugin wrote it: bot-language.json, or null without one. */
+export function languageFile() {
+  try {
+    return JSON.parse(readFileSync(join(OUT, 'data', 'bot-language.json'), 'utf8'));
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+// The plugin's language module (plugins/bot-channels/language.py), as the entrypoint installed it,
+// started as the plugin starts it: from the container's env, writing the poller's file.
+const START_LANGUAGE = `
+import importlib.util
+spec = importlib.util.spec_from_file_location("bot_language", "/opt/data/plugins/bot-channels/language.py")
+language = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(language)
+language.start({}, "/opt/data/bot-language.json")
+`;
+
+/**
+ * Sets PM_BOT_LANGUAGE in the bot's env file (undefined: unset), recreates the bot from the same
+ * image and waits for its poller, then (unless `start` is false) starts the plugin's language
+ * module in it, as the gateway would on its start. Returns the module's log lines.
+ */
+export async function botLanguage(value, { start = true } = {}) {
+  const env = join(OUT, 'data', '.env');
+  const lines = readFileSync(env, 'utf8').split('\n').filter((line) => !line.startsWith('PM_BOT_LANGUAGE='));
+  if (value !== undefined) lines.splice(lines.findIndex((line) => line.startsWith('PM_BOT_MODEL=')) + 1, 0, `PM_BOT_LANGUAGE=${value}`);
+  writeFileSync(env, lines.join('\n'), { mode: 0o600 });
+  const state = join(OUT, 'data', 'poller-state.json');
+  await recreate('pm-bot');
+  // The entrypoint removes the previous start's language file just before it runs the poller, which
+  // writes its state on every pass: after a pass of the new container's, a file written stays.
+  const since = Date.now();
+  await waitFor('the recreated poller\'s first pass', () => statSync(state).mtimeMs > since);
+  if (!start) return '';
+  const { stderr } = await compose(['exec', '-T', '-u', 'hermes', '-w', '/opt/data', 'pm-bot', '/opt/hermes/.venv/bin/python', '-c', START_LANGUAGE]);
+  return stderr;
 }
 
 /** A ticket as the bot would create it from a request channel, without the model, once the poller follows it. */

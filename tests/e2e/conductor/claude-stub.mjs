@@ -41,8 +41,8 @@ async function tool(name, args) {
 const fillIn = (value) => JSON.parse(JSON.stringify(value).replaceAll('{{ticket}}', identifier));
 
 const file = `/e2e/agent/${identifier}.json`;
-// Without a script the run works on until one arrives (`run.sh agent <ticket> <script>`), or until
-// the conductor stops it with its ticket.
+// Without a script the run works on until a scenario leaves one, or until the conductor stops it
+// with its ticket.
 if (!existsSync(file)) log('waits for a script');
 while (!existsSync(file)) await new Promise((resolve) => setTimeout(resolve, 2000));
 // Played once: the run a later unfreeze starts finds no script.

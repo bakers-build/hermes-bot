@@ -90,7 +90,7 @@ GitHub CI runs the first two in `pm_bot` and the third in `image_gate`; the rele
 | `model` | A scripted Anthropic Messages endpoint (`model.base_url` from `PM_BOT_MODEL_BASE_URL`): each scenario scripts the bot's tool calls, and a call it did not script fails the scenario |
 | `slack-recorder` | The Slack Web API methods the poller calls (`SLACK_API_URL`), answered and recorded |
 
-The scenarios (`tests/e2e/scenarios/`) assert what the site and the recorder hold, never wording. `--only <file>` runs one file, `--keep` leaves the stack running, `--real` uses a real model for the bot and Claude Code for the conductor (`ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`; a failure may then be the model's). A failed run leaves the stack's logs, the model's turns, the Slack calls and the poller's state in `tests/e2e/out/logs/`.
+The scenarios (`tests/e2e/scenarios/`) assert what the site and the recorder hold, never wording. `--only <file>` runs one file, `--keep` leaves the stack running (`bash tests/e2e/run.sh down` removes it), `--real` uses a real model for the bot and Claude Code for the conductor (`ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`; a failure may then be the model's). A failed run leaves the stack's logs, the model's turns, the Slack calls and the poller's state in `tests/e2e/out/logs/`.
 
 ## Test it by hand
 
@@ -110,15 +110,6 @@ On a workspace running the bot, with the service user's profile set and the Slac
 Also check the limits: after a restart of the bakers.build site a new request is answered without restarting the bot. A request channel without a ticket is archived after a week of silence; that takes a week, so the poller's tests cover it against stubs.
 
 **What the end-to-end test covers.** It covers the bakers.build side of steps 2, 5, 6, 7 and 8 and both restart limits: the handed-over ticket and the rename (2), the answer written, the label removed and the ticket unfrozen (5), nothing written after a technical problem (6), the status read and the one post on `review` (7), the archive, the `-2` channel with the requester and the second link (8), no second post after a restart of the bot, and a ticket after a restart of the site. It also checks that the question and the technical problem are relayed into the channel, the question once, and that a run that only asked a question is never reported as a problem. Steps 1, 3, 4, 9 and 10, the week-long archiving, the Slack side of 2 and 5 (the channel per request, the *Slack user* in the answer) and the relay through `hermes send` stay manual here; the plugin's and the poller's unit tests cover steps 1 and 9 and the attribution against stubs.
-
-**On the local stack, with ddev.** Put your model key into the git-ignored `.ddev/.env.e2e` (`ANTHROPIC_API_KEY=…` or `CLAUDE_CODE_OAUTH_TOKEN=…`) and run `ddev e2e up` in the repository; later starts may use `ddev start` or `ddev restart`. It starts the same stack with a real model for the bot, seeds the site and prints its address, `https://hermes-bot.ddev.site:33443`, with a login link for the conductor owner and the requester (`ddev e2e login` prints new ones). Then:
-
-- `ddev e2e chat` opens a fresh request channel in one window, as Slack shows it: what the poller posts there (questions, status, rename, archive) appears as it comes, and each line you type goes to the bot as the requester's message, with the channel's trusted line (in German; `E2E_LANGUAGE=en` for English), in one Hermes session; start a line with `[Name | Slack user <@U…>]` to write as someone else, Ctrl-D ends. `ddev e2e chat <ticket>` opens that ticket's channel instead, e.g. to answer a question from the work. `ddev e2e chat [<ticket>] "<message>"` sends that message first and stays open;
-- `ddev e2e slack` follows what the poller posts, renames and archives;
-- with the stub, `ddev e2e agent <ticket> question` makes its run on that ticket ask (`technical-problem`: report a technical problem, `done`: finish with a summary and move to `review`); a run without a script waits for one;
-- `ddev stop` stops the stack, and `ddev delete -O` removes it with its volumes.
-
-In ddev the conductor runs Claude Code with the same key, so handed-over tickets are really worked; `E2E_CONDUCTOR_AGENT=stub` in `.ddev/e2e.env` puts the stub back for `ddev e2e agent`. Without ddev, `ANTHROPIC_API_KEY=… bash tests/e2e/run.sh up` does the same on `http://nginx:<port>` (add `127.0.0.1 nginx` to `/etc/hosts`), with `run.sh chat | slack | agent | login | down`. Steps 2, 5, 6, 7 and 8 work on either; their Slack side, the relayed questions and technical problems included, is read from `slack`. Steps 1, 3, 4, 9 and 10 and the Slack side of 2 and 5 need a real workspace.
 
 ## Approve what it learns
 

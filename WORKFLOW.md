@@ -6,10 +6,8 @@ Invoke `bakers:bb-workflow` and follow it for the ticket's current state.
 
 Checks need Node 22 and python3 with PyYAML; the image checks and the end-to-end test need Docker.
 The end-to-end test (`tests/e2e/run.sh`) starts its own stack: a bakers.build site, the bot's image,
-a conductor, a scripted model and a Slack recorder, with no credentials. The test environment for a
-person is the same stack in ddev (`ddev e2e up`, README › *End-to-end test*), with the model key
-from the git-ignored `.ddev/.env.e2e`. A bot in Slack needs a Coder workspace, which no ticket run
-provisions.
+a conductor, a scripted model and a Slack recorder, with no credentials. A bot in Slack needs a
+Coder workspace, which no ticket run provisions.
 
 ## bb-phase-work
 
@@ -38,18 +36,6 @@ whose *End-to-end test* step runs `tests/e2e/run.sh` on the built image) is the 
 only when both jobs are green. A push to `main` publishes the image to
 `ghcr.io/bakers-build/hermes-bot`. Pull request titles are Conventional Commits subjects
 (`feat: …`, `fix: …`, `ci: …`).
-
-## bb-phase-outtake
-
-At the end of `working`, start the test environment and hand it over: `ddev e2e up` in the
-worktree (later `ddev restart`), on the branch's code. Its output names the site
-(`https://hermes-bot.ddev.site:33443`) and a login link per seeded account (the conductor owner and
-the requester); put the site link and both login links into the summary's *Manual review*, with
-`ddev e2e chat "<request>"` and `ddev e2e slack` as what to try: Claude Code in the conductor
-works what the bot hands over. When
-`.ddev/.env.e2e` holds no model key, give `ddev e2e up` as the reviewer's first action instead,
-naming the key it needs. One worktree's stack runs at a time (the ddev project is `hermes-bot`):
-when ddev names another worktree's project, `ddev stop --unlist hermes-bot` there first.
 
 ## bb-phase-transition
 

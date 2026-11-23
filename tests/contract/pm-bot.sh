@@ -46,7 +46,6 @@
 #   - platform_toolsets.cli equals .slack, model.base_url comes from PM_BOT_MODEL_BASE_URL
 #     (default Anthropic's), and mode agent runs the poller without the gateway
 #   - CI's image job runs the end-to-end test on the image it built, before Publish
-#   - the ddev project (.ddev/) includes compose.yaml and the overlay, and sets only profiles on pm-bot
 # Needs python3 with PyYAML.
 # ---------------------------------------------------------------------------
 set -euo pipefail
@@ -443,41 +442,6 @@ for e in errors:
 sys.exit(1 if errors else 0)
 PY
 pass "the end-to-end test runs production's pm-bot: only mode, network and start order differ, every env key set"
-
-# The ddev project runs the same stack: it includes production's compose.yaml and the overlay, and
-# its own part only holds pm-bot back until the site is seeded.
-python3 - <<'PY' || fail "the ddev stack does not run production's pm-bot (see above)"
-import glob, sys, yaml
-
-# Compose's merge tags read as their plain values.
-class Loader(yaml.SafeLoader):
-    pass
-def plain(loader, node):
-    if isinstance(node, yaml.MappingNode):
-        return loader.construct_mapping(node, deep=True)
-    if isinstance(node, yaml.SequenceNode):
-        return loader.construct_sequence(node, deep=True)
-    return loader.construct_scalar(node)
-for tag in ("!override", "!reset"):
-    Loader.add_constructor(tag, plain)
-load = lambda path: yaml.load(open(path), Loader=Loader) or {}
-
-errors = []
-include = load(".ddev/docker-compose.e2e.yaml").get("include") or []
-paths = [entry.get("path") for entry in include if isinstance(entry, dict)]
-if paths != [["../compose.yaml", "../tests/e2e/compose.yaml", "e2e-site.yaml"]]:
-    errors.append(f".ddev/docker-compose.e2e.yaml includes {paths}, not compose.yaml, the overlay and e2e-site.yaml")
-site = (load(".ddev/e2e-site.yaml").get("services") or {}).get("pm-bot") or {}
-if set(site) - {"profiles"}:
-    errors.append(f".ddev/e2e-site.yaml sets {sorted(set(site) - {'profiles'})} on pm-bot; only profiles may differ")
-for path in glob.glob(".ddev/docker-compose.*.yaml"):
-    if "pm-bot" in (load(path).get("services") or {}):
-        errors.append(f"{path} defines pm-bot itself")
-for e in errors:
-    print("FAIL:", e, file=sys.stderr)
-sys.exit(1 if errors else 0)
-PY
-pass "the ddev stack includes production's pm-bot and only delays its start"
 
 # CI runs the end-to-end test on the image it built and is about to publish, before Publish.
 python3 - .github/workflows/checks.yml <<'PY' || fail "CI does not run the end-to-end test on its image before publishing (see above)"

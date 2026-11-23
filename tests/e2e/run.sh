@@ -11,21 +11,7 @@
 #                ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN; a failure may then be the model's
 #       --keep   leave the stack running afterwards (tests/e2e/run.sh down removes it)
 #
-#   tests/e2e/run.sh up [IMAGE] [--real]   start and seed the stack for testing by hand, run no
-#                                          scenario; print the site's URL and login links. Needs a
-#                                          model key: talking to the bot by hand needs a real model.
-#   tests/e2e/run.sh chat [TICKET] ["<message>"]   a request channel in one window: a fresh one or
-#                                          TICKET's, with the poller's posts as they come; each line
-#                                          (the message first) goes to the bot as the requester's
-#   tests/e2e/run.sh slack                 follow the Slack calls the poller makes
-#   tests/e2e/run.sh agent <ticket> <script>   the stub agent's next run on <ticket> plays
-#                                          tests/e2e/agent/<script>.json (question, technical-problem, …)
-#   tests/e2e/run.sh login                 print a login link per seeded account
 #   tests/e2e/run.sh down                  remove the stack and its volumes
-#
-# In the ddev project (.ddev/), `ddev e2e up` (later also `ddev start`) runs the same stack: it and
-# ddev's hooks call `ddev-check` and `ddev-seed` here, and `ddev e2e <subcommand>` runs chat, slack,
-# agent and login with E2E_DDEV=1.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -33,40 +19,23 @@ E2E="$ROOT/tests/e2e"
 OUT="$E2E/out"
 PROJECT=pm-bot-e2e
 COMPOSE=(-p "$PROJECT" -f "$ROOT/compose.yaml" -f "$E2E/compose.yaml")
-STATE="$OUT/stack.env"
-# The site's one host name: nginx here, the ddev project's under ddev.
-SITE_HOST=nginx
-if [ "${E2E_DDEV:-}" = 1 ]; then
-  # The ddev stack's own directory (.ddev/e2e.env), apart from the scenario runs' out/.
-  OUT="$E2E/ddev-out"
-  STATE="$OUT/stack.env"
-  # ddev's own merge of .ddev/docker-compose.e2e.yaml, every variable filled.
-  COMPOSE=(-p ddev-hermes-bot -f "$ROOT/.ddev/.ddev-docker-compose-full.yaml")
-  SITE_HOST=hermes-bot.ddev.site
-fi
 
 say() { echo "e2e: $*" >&2; }
 die() { echo "e2e: $*" >&2; exit 1; }
 
 dc() { docker compose "${COMPOSE[@]}" "$@"; }
 
-# The variables both compose files read; stack.env keeps them for the subcommands after `up`.
+# The variables both compose files read.
 export_stack() {
   export PM_BOT_IMAGE="$1" PM_BOT_DATA="$OUT/data" PM_BOT_CLONE="$OUT/clone" PM_BOT_UID="$(id -u)" PM_BOT_GID="$(id -g)" \
     E2E_AGENT="$OUT/agent" E2E_CONDUCTOR="$OUT/conductor" E2E_CONDUCTOR_AGENT="$2" BAKERS_VERSION="${BAKERS_VERSION:-0.11.0}"
-}
-load_stack() {
-  [ -f "$STATE" ] || die "no stack; start one with tests/e2e/run.sh up (or ddev start)"
-  # shellcheck disable=SC1090
-  source "$STATE"
-  [ "${E2E_DDEV:-}" = 1 ] || export_stack "$IMAGE" "$AGENT"
 }
 
 # The working copy's image, built as CI builds it.
 build_image() {
   local tag=pm-bot:e2e
   say "building $tag from the working copy"
-  docker build -t "$tag" --label "org.opencontainers.image.revision=$(git -C "$ROOT" rev-parse HEAD)" \
+  docker build -t "$tag" \
     --build-context bundle=https://github.com/bakers-build/bakers-build.git#next:.claude/skills/bakers-build \
     --build-context superpowers=https://github.com/obra/superpowers.git#bb92a77741419a4ab5f06e711a283343f1ada0c3 \
     --build-context mattpocock=https://github.com/mattpocock/skills.git#d1478fcb140db0b93c0c8df17bcfd311844749d0 "$ROOT" >&2
@@ -77,7 +46,7 @@ build_image() {
 site_up() {
   local port
   port="$(dc port nginx 80 2>/dev/null | sed 's/.*://')" || return 1
-  [ -n "$port" ] && curl -fsS -o /dev/null -H "Host: $SITE_HOST" "http://127.0.0.1:$port/user/login"
+  [ -n "$port" ] && curl -fsS -o /dev/null -H "Host: nginx" "http://127.0.0.1:$port/user/login"
 }
 
 # seed <scripted|real>: wait for the site, seed it, and write the bot's env file and the
@@ -94,7 +63,7 @@ seed() {
   local key token base
   key="${ANTHROPIC_API_KEY:-}" token="${CLAUDE_CODE_OAUTH_TOKEN:-}" base=http://model/anthropic
   if [ "$mode" = scripted ]; then key=e2e-scripted token= ; else base=https://api.anthropic.com; fi
-  node - "$E2E/pm-bot.env" "$OUT/seed.json" "$OUT/data/.env" "$base" "$key" "$token" "http://$SITE_HOST" <<'NODE'
+  node - "$E2E/pm-bot.env" "$OUT/seed.json" "$OUT/data/.env" "$base" "$key" "$token" http://nginx <<'NODE'
 const fs = require('node:fs');
 const [template, seedFile, target, base, key, token, site] = process.argv.slice(2);
 const seed = JSON.parse(fs.readFileSync(seedFile, 'utf8'));
@@ -112,24 +81,6 @@ NODE
   cp "$OUT/seed.json" "$OUT/conductor/seed.json" || return
 }
 
-# A one-time login link per seeded account, on the site's address as the browser reaches it.
-logins() {
-  local uri="$1" who name
-  for who in owner requester; do
-    name="$(node -p "require('$OUT/seed.json').${who}_user_name")"
-    echo "Login as $who ($name): $(dc exec -T php /var/www/html/vendor/bin/drush user:login --name="$name" --uri="$uri")"
-  done
-}
-
-# The site's address in the browser.
-site_url() {
-  if [ "${E2E_DDEV:-}" = 1 ]; then
-    echo "https://$SITE_HOST:33443"
-  else
-    echo "http://nginx:$(dc port nginx 80 | sed 's/.*://')"
-  fi
-}
-
 # start <image> <scripted|real> <stub|claude>: the bot's model and the conductor's agent. Each step
 # returns on failure: the caller's `|| status=$?` switches errexit off in here.
 start() {
@@ -140,7 +91,6 @@ start() {
   # The clone the bot's clone-reader sees: any project's code; this repository's README will do.
   cp "$ROOT/README.md" "$OUT/clone/"
   export_stack "$image" "$agent"
-  printf 'IMAGE=%q\nAGENT=%q\nMODE=%q\n' "$image" "$agent" "$mode" >"$STATE"
 
   say "starting the site (bakers.build $BAKERS_VERSION), the model and the Slack recorder"
   dc up -d nginx model slack-recorder >&2 || return
@@ -195,151 +145,6 @@ model_mode() {
 }
 
 case "${1:-}" in
-  up)
-    shift
-    image="" real=0
-    for arg in "$@"; do
-      case "$arg" in
-        --real) real=1 ;;
-        -*) die "unknown option $arg" ;;
-        *) image="$arg" ;;
-      esac
-    done
-    # Talking to the bot by hand needs a real model; the scripted one answers only scenarios.
-    [ -n "${ANTHROPIC_API_KEY:-}${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || die "up needs a model key: set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN"
-    [ -n "$image" ] || image="$(build_image)"
-    # The bot talks to the real model; --real also gives the conductor Claude Code.
-    agent=stub
-    [ "$real" = 1 ] && agent=claude
-    start "$image" real "$agent"
-    # The site answers only to the host name nginx.
-    echo "Site: $(site_url) (add '127.0.0.1 nginx' to /etc/hosts once)"
-    logins "$(site_url)"
-    echo "Next: tests/e2e/run.sh chat | slack | agent <ticket> <script> | login | down"
-    ;;
-  login)
-    load_stack
-    echo "Site: $(site_url)"
-    logins "$(site_url)"
-    ;;
-  ddev-up)
-    # `ddev e2e up`: what ddev needs before it can read the stack, then `ddev start`. ddev reads the
-    # compose files, the bot's env file among them, before its first hook runs.
-    "$0" ddev-check
-    exec ddev start
-    ;;
-  ddev-check)
-    # `ddev e2e up` and ddev's pre-start hook: the model key, the bot's image, the run directory.
-    if [ -f "$ROOT/.ddev/.env.e2e" ]; then set -a; . "$ROOT/.ddev/.env.e2e"; set +a; fi
-    [ -n "${ANTHROPIC_API_KEY:-}${CLAUDE_CODE_OAUTH_TOKEN:-}" ] \
-      || die "the ddev stack needs a model key: put ANTHROPIC_API_KEY=… or CLAUDE_CODE_OAUTH_TOKEN=… into .ddev/.env.e2e"
-    image="$(sed -n 's/^PM_BOT_IMAGE=//p' "$ROOT/.ddev/e2e.env")"
-    # The bot of the worktree's commit: rebuilt when the image is another's (mostly from cache).
-    built="$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image" 2>/dev/null || true)"
-    [ "$built" = "$(git -C "$ROOT" rev-parse HEAD)" ] || [ "$(build_image)" = "$image" ] || die "could not build $image"
-    mkdir -p "$OUT/data" "$OUT/clone" "$OUT/agent" "$OUT/conductor"
-    [ -f "$OUT/clone/README.md" ] || cp "$ROOT/README.md" "$OUT/clone/"
-    # Compose needs the bot's env file to exist; ddev-seed writes it.
-    [ -f "$OUT/data/.env" ] || : >"$OUT/data/.env"
-    ;;
-  ddev-seed)
-    # ddev's post-start hook: seed the site, then start the bot and the conductor on it.
-    [ "${E2E_DDEV:-}" = 1 ] || die "ddev-seed runs in ddev's post-start hook"
-    set -a; . "$ROOT/.ddev/.env.e2e"; set +a
-    agent="$(sed -n 's/^E2E_CONDUCTOR_AGENT=//p' "$ROOT/.ddev/e2e.env")"
-    printf 'IMAGE=%q\nAGENT=%q\nMODE=real\n' "$(sed -n 's/^PM_BOT_IMAGE=//p' "$ROOT/.ddev/e2e.env")" "$agent" >"$STATE"
-    seed real || die "seeding the site failed"
-    # Claude Code's key, should the conductor run it (E2E_CONDUCTOR_AGENT=claude in .ddev/e2e.env).
-    (umask 077 && grep -E '^(ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN)=' "$ROOT/.ddev/.env.e2e" >"$OUT/conductor/model.env")
-    # ddev's merged file holds the bot's env file as it was at ddev's start; merge again with the
-    # keys just written.
-    (umask 077 && ddev debug compose-config >"$OUT/ddev-compose.yaml") || die "ddev debug compose-config failed"
-    docker compose -p ddev-hermes-bot -f "$OUT/ddev-compose.yaml" --profile seeded up -d --build --force-recreate pm-bot conductor >&2
-    echo "Site: $(site_url)"
-    logins "$(site_url)"
-    echo "Next: ddev e2e chat | slack | agent <ticket> <script> | login"
-    ;;
-  chat)
-    load_stack
-    [ "$MODE" = real ] || die "chat needs a stack started with a model key (tests/e2e/run.sh up)"
-    shift
-    email="$(node -p "require('$OUT/seed.json').requester_email")"
-    ticket="none yet"
-    if [[ "${1:-}" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]]; then
-      # A ticket's channel: its newest Slack channel link, read from the site as the bot reads it.
-      ticket="$1"
-      shift
-      channel="$(node - "$OUT/seed.json" "$ticket" "$(dc port nginx 80 | sed 's/.*://')" "$SITE_HOST" <<'NODE'
-const http = require('node:http');
-const [seedFile, ticket, port, host] = process.argv.slice(2);
-const key = require(seedFile).bot_api_key;
-let session = '';
-const rpc = (message) => new Promise((resolve, reject) => {
-  const headers = { host, 'content-type': 'application/json', accept: 'application/json, text/event-stream', authorization: `Bearer ${key}` };
-  if (session) headers['mcp-session-id'] = session;
-  const req = http.request({ host: '127.0.0.1', port, method: 'POST', path: '/mcp', headers }, (res) => {
-    let text = '';
-    res.on('data', (chunk) => (text += chunk));
-    res.on('end', () => { session = res.headers['mcp-session-id'] ?? session; resolve(message.id === undefined ? null : JSON.parse(text).result); });
-  });
-  req.on('error', reject);
-  req.end(JSON.stringify(message));
-});
-(async () => {
-  await rpc({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'e2e-chat', version: '1' } } });
-  await rpc({ jsonrpc: '2.0', method: 'notifications/initialized' });
-  const result = await rpc({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'tool_api__bakers_ticket_read', arguments: { ticket, newest: 0 } } });
-  const link = (result?.structuredContent?.links ?? []).filter((l) => l.title === 'Slack channel').at(-1);
-  if (!link) { console.error(`${ticket} has no Slack channel link`); process.exit(1); }
-  console.log(link.uri.split('/').at(-1));
-})();
-NODE
-)" || die "no channel for $ticket"
-    else
-    # A fresh request channel per chat, recorded as the bot-channels plugin records the channels it
-    # opens, so the poller renames, archives and reopens it.
-    channel="$(node -e '
-      const fs = require("node:fs");
-      const [file, email] = process.argv.slice(1);
-      let bot = {};
-      try { bot = JSON.parse(fs.readFileSync(file, "utf8")); } catch {}
-      // Unique by time: a count of this file reused an earlier channel, and with it its ticket.
-      const n = Date.now().toString(36).toUpperCase();
-      const channel = `C0HAND${n}`;
-      bot[channel] = { name: `req-hand-test-${n.toLowerCase()}`, requester: "U0E2EREQ", created: new Date().toISOString(), requester_email: email };
-      fs.writeFileSync(file, JSON.stringify(bot, null, 2));
-      console.log(channel);
-    ' "$OUT/data/bot-channels.json" "$email")"
-    fi
-    # The channel in one window: the bot's posts as they come, and each typed line as a message;
-    # a message given here is the first.
-    E2E_COMPOSE="$(printf '%s\n' "${COMPOSE[@]}" | node -e 'process.stdout.write(JSON.stringify(require("fs").readFileSync(0,"utf8").trim().split("\n")))')" \
-      exec node "$E2E/lib/channel-chat.mjs" "http://127.0.0.1:$(dc port slack-recorder 80 | sed 's/.*://')" \
-      "$OUT/data/poller-state.json" "$channel" "$ticket" "$email" "${E2E_LANGUAGE:-de}" "$*"
-    ;;
-  slack)
-    load_stack
-    port="$(dc port slack-recorder 80 | sed 's/.*://')"
-    exec node -e '
-      const url = `http://127.0.0.1:${process.argv[1]}/_calls`;
-      let seen = 0;
-      setInterval(async () => {
-        const calls = await (await fetch(url)).json();
-        for (const c of calls.slice(seen)) {
-          const what = [c.body.channel, c.body.name, c.body.users].filter(Boolean).join(" ");
-          console.log(`${new Date(c.at).toISOString()} ${c.method} ${what}${c.body.text ? "\n  " + c.body.text.replace(/\n/g, "\n  ") : ""}`);
-        }
-        seen = calls.length;
-      }, 2000);
-    ' "$port"
-    ;;
-  agent)
-    load_stack
-    [ $# -eq 3 ] || die "usage: tests/e2e/run.sh agent <ticket identifier> <script>"
-    [ -f "$E2E/agent/$3.json" ] || die "no agent script $3 (tests/e2e/agent/$3.json)"
-    cp "$E2E/agent/$3.json" "$OUT/agent/$2.json"
-    echo "The stub agent's next run on $2 plays $3."
-    ;;
   down)
     # Compose reads the files' variables even to remove the stack.
     export_stack none stub

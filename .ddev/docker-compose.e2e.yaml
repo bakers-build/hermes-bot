@@ -1,7 +1,0 @@
-# tests/e2e's stack in this ddev project: production's compose.yaml, the end-to-end overlay and the
-# ddev parts (e2e-site.yaml), merged as run.sh merges them. Relative paths are the repository
-# root's. e2e.env fills the variables; the model key in the git-ignored .env.e2e reaches the bot and
-# the conductor through their files, written by the post-start hook.
-include:
-  - path: [../compose.yaml, ../tests/e2e/compose.yaml, e2e-site.yaml]
-    env_file: e2e.env

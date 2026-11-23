@@ -6,8 +6,6 @@ set -eu
 seed="$HOME/seed.json"
 value() { node -p "require('$seed').$1"; }
 export BAKERS_HOME="$HOME/.bakers" BAKERS_CLIENT_SECRET="$(value owner_client_secret)"
-# Claude Code's model key in the ddev stack, which run.sh ddev-seed writes here.
-if [ -f "$HOME/model.env" ]; then set -a; . "$HOME/model.env"; set +a; fi
 cd /work/checkout
 # Each seed issues a new key: a login with an older one starts over.
 if [ "$(cat "$HOME/client-id" 2>/dev/null)" != "$(value owner_client_id)" ]; then

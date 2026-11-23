@@ -9,7 +9,7 @@
 //   {tool_result: <regex>, after?}  a tool result whose text matches, of a tool whose name ends with `after`
 //   {system: <regex>}               any turn of a request whose system prompt matches (Hermes' side calls)
 // and a `reply`: a list of {text} and {tool, input} blocks. A tool is named by the suffix of a tool
-// the request offers (bakers_ticket_create), directly or deferred behind Hermes' tool_call. Named groups of the matching regex are kept and fill
+// the request offers (bakers_ticket_create, open_request_channel), directly or deferred behind Hermes' tool_call. Named groups of the matching regex are kept and fill
 // `{{name}}` in later replies. A rule answers once unless it has `repeat: true`. A turn no rule
 // matches is answered with an error and logged unmatched, which fails the scenario.
 //
@@ -79,10 +79,11 @@ export function createModel() {
   }
 
   // The reply's blocks as Messages API content, tools resolved against the request's tools. Hermes
-  // offers MCP tools deferred: their names stand in tool_search's catalog, and tool_call invokes them.
+  // offers MCP and plugin tools deferred: each stands in tool_search's catalog as a `- <name>: …`
+  // line, and tool_call invokes them.
   function content(reply, tools) {
     const offered = tools.map((t) => t.name);
-    const catalog = [...(tools.find((t) => t.name === 'tool_search')?.description ?? '').matchAll(/\bmcp__[\w-]+/g)].map((m) => m[0]);
+    const catalog = [...(tools.find((t) => t.name === 'tool_search')?.description ?? '').matchAll(/^- ([\w.-]+):/gm)].map((m) => m[1]);
     return reply.map((block) => {
       if (block.text !== undefined) return { type: 'text', text: fillIn(block.text, vars) };
       ids += 1;

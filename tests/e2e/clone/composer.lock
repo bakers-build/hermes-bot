@@ -1,0 +1,31 @@
+{
+    "_readme": [
+        "The end-to-end test's lock: acme/widget 1.0.0, affected by the advisory tests/e2e/advisories serves."
+    ],
+    "content-hash": "00000000000000000000000000000000",
+    "packages": [
+        {
+            "name": "acme/widget",
+            "version": "1.0.0",
+            "source": {
+                "type": "git",
+                "url": "https://git.e2e.test/acme/widget.git",
+                "reference": "0000000000000000000000000000000000000000"
+            },
+            "type": "library",
+            "license": [
+                "MIT"
+            ],
+            "description": "A widget renderer."
+        }
+    ],
+    "packages-dev": [],
+    "aliases": [],
+    "minimum-stability": "stable",
+    "stability-flags": {},
+    "prefer-stable": false,
+    "prefer-lowest": false,
+    "platform": {},
+    "platform-dev": {},
+    "plugin-api-version": "2.6.0"
+}

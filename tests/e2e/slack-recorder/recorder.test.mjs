@@ -30,6 +30,19 @@ describe('Slack recorder', () => {
     assert.equal(call.token, 'xoxb-e2e');
   });
 
+  it('given a form-encoded call, as slack_sdk sends one, when a channel is created, then its fields are recorded and a taken name is refused', async () => {
+    const create = (name) =>
+      fetch(`${base}/api/conversations.create`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded', authorization: 'Bearer xoxb-e2e' },
+        body: new URLSearchParams({ name, is_private: '0' }),
+      }).then((res) => res.json());
+    assert.equal((await create('req-security-updates')).ok, true);
+    assert.equal((await create('req-security-updates')).error, 'name_taken');
+    const [call] = await calls();
+    assert.deepEqual(call.body, { name: 'req-security-updates', is_private: '0' });
+  });
+
   it('given a created channel, when it is renamed, invited to and archived, then each call succeeds and is recorded', async () => {
     const id = await slack.create('e2e-1-login');
     assert.match(id, /^C[A-Z0-9]+$/);

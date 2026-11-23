@@ -13,7 +13,17 @@
 #     ${env:BAKERS_API_KEY} Hermes fills, and without the key itself; Hermes
 #     connects to bakers.build's /mcp (a stub of it, pm-bot-mcp-stub.mjs, in a
 #     container of the same image) with the key as bearer and takes exactly the
-#     eight included tools; with a wrong key the check fails
+#     nine included tools; with a wrong key the check fails
+#   - php and composer 2 run as hermes; the audit skill's own commands work on a read-only clone,
+#     offline: find skips vendor/, a lock without packages has no advisories, grep reads
+#     the installed version, and an audit without Packagist fails with neither exit 0 nor 1
+#   - the composer-audit cron job is registered once (schedule from AUDIT_TIME, delivery to the
+#     main channel, the skill) and stays one over two starts; the skill is rendered with the
+#     project; an invalid AUDIT_TIME stops the start by name, an unreadable job store gets no
+#     second job, and AUDIT_ENABLED=false removes the job with one log line, whatever AUDIT_TIME,
+#     or names a job store it cannot read instead of logging the audit off
+#   - Hermes resolves the cron job's toolsets to terminal, skills, bakers and bot-channels-cron and
+#     Slack's to the bot's five, without the terminal or the channel tool
 #   - the bot-channels plugin is installed and loaded, and the Hermes internals it relies on
 #     (SlackAdapter._handle_slack_message, the channel getters, the reaction lifecycle's
 #     _track_reacting_message, _event_team_id, on_processing_complete and
@@ -108,9 +118,9 @@ grep -qF "url: $BAKERS_URL/mcp" <<<"$config" || fail "config.yaml does not reach
 pass "config.yaml rendered, no placeholder left but the key Hermes fills, no key in it"
 
 grep -q 'Connected' <<<"$out" || { echo "$out" >&2; fail "Hermes does not connect to /mcp with the API key"; }
-grep -qx 'bakers tools: tool_api__bakers_comment_create,tool_api__bakers_ticket_classify,tool_api__bakers_ticket_create,tool_api__bakers_ticket_read,tool_api__bakers_ticket_search,tool_api__bakers_ticket_transition,tool_api__bakers_ticket_update,tool_api__bakers_user_read' <<<"$out" \
-  || { echo "$out" >&2; fail "Hermes does not register exactly the eight included tools of the sixteen offered"; }
-pass "Hermes connects to /mcp with the API key as bearer and takes exactly the eight tools"
+grep -qx 'bakers tools: tool_api__bakers_comment_create,tool_api__bakers_conductor_list,tool_api__bakers_ticket_classify,tool_api__bakers_ticket_create,tool_api__bakers_ticket_read,tool_api__bakers_ticket_search,tool_api__bakers_ticket_transition,tool_api__bakers_ticket_update,tool_api__bakers_user_read' <<<"$out" \
+  || { echo "$out" >&2; fail "Hermes does not register exactly the nine included tools of the sixteen offered"; }
+pass "Hermes connects to /mcp with the API key as bearer and takes exactly the nine tools"
 
 in_data "sed -i 's/^BAKERS_API_KEY=.*/BAKERS_API_KEY=wrong-key/' /d/.env"
 out="$(start --rm -e BAKERS_API_KEY=wrong-key "$IMAGE" check 2>&1)" && { echo "$out" >&2; fail "check passed with a wrong API key"; }
@@ -118,16 +128,114 @@ grep -qE 'Connection failed.*(401|[Uu]nauthori)' <<<"$out" || { echo "$out" >&2;
 in_data "sed -i 's/^BAKERS_API_KEY=.*/BAKERS_API_KEY=$key/' /d/.env"
 pass "a wrong API key fails the check"
 
-grep -qx 'skills: bb-create-ticket,bb-recipe-matt,bb-recipe-superpowers,brainstorming,grilling,writing-plans' <<<"$out" \
-  || { echo "$out" >&2; fail "the installed skills are not exactly the shipped six"; }
+grep -qx 'skills: bb-create-ticket,bb-recipe-matt,bb-recipe-superpowers,brainstorming,composer-audit,grilling,writing-plans' <<<"$out" \
+  || { echo "$out" >&2; fail "the installed skills are not exactly the shipped seven"; }
 grep -qE '^bakers skills [0-9]+\.[0-9]+\.[0-9]+$' <<<"$out" || { echo "$out" >&2; fail "the bundle version is not printed"; }
 in_data '[ ! -e /d/skills/project-manager ]' || fail "the old project-manager skill was not removed"
 pass "the shipped skills are installed, the bundle version printed and project-manager removed"
 
 grep -qx 'plugins: bot-channels' <<<"$out" || { echo "$out" >&2; fail "Hermes does not load exactly the bot-channels plugin"; }
+# The toolsets as Hermes resolves them from the rendered config, plugin toolsets included: only
+# the nightly cron job has the terminal and the channel tool.
+grep -qx 'toolsets cron: bakers,bot-channels-cron,skills,terminal' <<<"$out" \
+  || { echo "$out" >&2; fail "the cron job's toolsets are not exactly terminal, skills, bakers and bot-channels-cron"; }
+grep -qx 'toolsets slack: bakers,clone-reader,memory,session_search,skills' <<<"$out" \
+  || { echo "$out" >&2; fail "Slack's toolsets are not exactly the bot's five"; }
 grep -qx 'plugin seams: ok' <<<"$out" || { echo "$out" >&2; fail "a Hermes internal the bot-channels plugin relies on is gone"; }
 in_data '[ -f /d/plugins/bot-channels/__init__.py ]' || fail "the bot-channels plugin is not in the data directory"
 pass "the bot-channels plugin is installed and loaded, and its Hermes seams exist"
+
+# The nightly audit's tools: php and composer 2, as hermes.
+docker run --rm -u hermes --entrypoint sh "$IMAGE" -c 'php -v && composer --version' >/dev/null 2>&1 \
+  || fail "php or composer does not run as hermes"
+docker run --rm -u hermes --entrypoint composer "$IMAGE" --version 2>/dev/null | grep -qE '^Composer version 2\.' \
+  || fail "composer is not version 2"
+pass "php and composer 2 run as hermes"
+
+# The skill's own commands, as hermes, offline, on a read-only clone: find lists the locks outside
+# vendor/, a lock without packages audits to no advisories (exit 0), grep reads an installed
+# version from the lock, and an audit that cannot reach Packagist fails with an exit
+# code other than 0 and 1. SKILL.md holds these commands (tests/contract/pm-bot.sh pins them).
+audit_out="$(docker run --rm -i --network none -u hermes --entrypoint sh "$IMAGE" -c '
+  mkdir -p /tmp/clone/empty /tmp/clone/one /tmp/clone/vendor/x && cd /tmp/clone
+  echo "{}" >empty/composer.json; echo "{\"packages\":[],\"packages-dev\":[]}" >empty/composer.lock
+  echo "{}" >one/composer.json
+  printf "%s\n" "{" "    \"packages\": [" "        {" "            \"name\": \"psr/log\"," "            \"version\": \"3.0.2\"," \
+    "            \"type\": \"library\"" "        }" "    ]," "    \"packages-dev\": []" "}" >one/composer.lock
+  cp one/composer.json one/composer.lock vendor/x/
+  chmod -R a-w /tmp/clone
+  find . \( -name composer.lock -o -name composer.json \) -not -path "*/.git/*" -not -path "*/vendor/*" -not -path "*/node_modules/*" | sort
+  composer audit --locked --format=json --no-plugins --no-scripts --abandoned=ignore --working-dir=./empty; echo "empty rc=$?"
+  grep -A1 "\"name\": \"psr/log\"," ./one/composer.lock; echo "show rc=$?"
+  composer audit --locked --format=json --no-plugins --no-scripts --abandoned=ignore --working-dir=./one; echo "one rc=$?"
+  chmod -R u+w /tmp/clone; mkdir bad; echo "{}" >bad/composer.json
+  echo "{\"packages\":[{\"name\":\"psr/log\",\"version\":\"3.0.2\",\"source\":{}}],\"packages-dev\":[]}" >bad/composer.lock
+  composer audit --locked --format=json --no-plugins --no-scripts --abandoned=ignore --working-dir=./bad >bad.out 2>&1; echo "bad rc=$?"
+  grep -c "\"advisories\"" bad.out' 2>&1)" || true
+[ "$(grep -c '^\./.*composer\.\(json\|lock\)$' <<<"$audit_out")" = 4 ] && ! grep -q '^\./vendor/' <<<"$audit_out" \
+  || { echo "$audit_out" >&2; fail "the skill's find does not list exactly the locks outside vendor/"; }
+grep -qx 'empty rc=0' <<<"$audit_out" && grep -qxF 'No packages - skipping audit.' <<<"$audit_out" \
+  || { echo "$audit_out" >&2; fail "composer audit does not audit a lock without packages to no advisories"; }
+grep -qx 'show rc=0' <<<"$audit_out" && grep -qF '"version": "3.0.2",' <<<"$audit_out" \
+  || { echo "$audit_out" >&2; fail "the skill's grep does not read the installed version from the lock"; }
+grep -qE '^one rc=[0-9]+$' <<<"$audit_out" && ! grep -qxE 'one rc=(0|1)' <<<"$audit_out" \
+  || { echo "$audit_out" >&2; fail "an audit without Packagist does not fail with an exit code other than 0 and 1"; }
+# A broken lock also exits 1, without the advisories JSON: SKILL.md fails the night on that.
+grep -qx 'bad rc=1' <<<"$audit_out" && [ "$(tail -1 <<<"$audit_out")" = 0 ] \
+  || { echo "$audit_out" >&2; fail "a broken lock does not exit 1 without the advisories JSON"; }
+pass "the skill's find, composer audit and grep work as hermes on a read-only clone; a broken lock exits 1 without JSON"
+
+# The rendered skill: the project and workflow filled in, no placeholder left.
+skill="$(in_data 'cat /d/skills/composer-audit/SKILL.md')" || fail "the composer-audit skill is not installed"
+! grep -n '\${' <<<"$skill" || fail "the composer-audit skill keeps a placeholder"
+grep -qF "project: \"$(sed -n 's/^PM_BOT_PROJECT=//p' test/fixture.env)\"" <<<"$skill" || fail "the composer-audit skill lacks the project"
+pass "the composer-audit skill is rendered with the project and workflow"
+
+# Hermes scans a cron job's prompt with its loaded skills before each run and blocks the run on
+# a match; the job's prompt and skill must pass.
+scan="$(docker run --rm -i -v "$volume:/d:ro" --entrypoint sh "$IMAGE" -c 'cd /opt/hermes && .venv/bin/python -c "
+import json
+from tools.cronjob_prompt_scan import _scan_cron_prompt, _scan_cron_skill_assembled
+job = [j for j in json.load(open(\"/d/cron/jobs.json\"))[\"jobs\"] if j[\"name\"] == \"composer-audit\"][0]
+skill = open(\"/d/skills/composer-audit/SKILL.md\").read()
+print(\"scan:\", repr(_scan_cron_prompt(job[\"prompt\"])), repr(_scan_cron_skill_assembled(job[\"prompt\"] + chr(10) + skill)[1]))
+"' 2>&1)" || { echo "$scan" >&2; fail "Hermes' cron prompt scan did not run"; }
+grep -qxF "scan: '' ''" <<<"$scan" || { echo "$scan" >&2; fail "Hermes' cron prompt scan blocks the composer-audit job"; }
+pass "the composer-audit job's prompt and skill pass Hermes' cron prompt scan"
+
+# The cron job, as the check start registered it.
+jobs() { in_data 'cat /d/cron/jobs.json' | node -e '
+  const jobs = JSON.parse(require("fs").readFileSync(0, "utf8")).jobs.filter((j) => j.name === "composer-audit");
+  console.log(jobs.map((j) => [j.schedule.expr, j.deliver, j.skills.join("+"), j.enabled].join(" ")).join("\n"));'; }
+[ "$(jobs)" = "30 3 * * * slack:C0000000001 composer-audit true" ] || { jobs >&2; fail "the composer-audit job is not registered once at 03:30 for the main channel"; }
+grep -qF 'pm-bot: composer-audit at 30 3 * * *' <<<"$out" || { echo "$out" >&2; fail "the start does not log the audit job"; }
+pass "the composer-audit job is registered at AUDIT_TIME, delivered to the main channel, with its skill"
+
+out="$(start --rm -e AUDIT_TIME=25:00 "$IMAGE" check 2>&1)" && fail "check passed with AUDIT_TIME=25:00"
+grep -q 'AUDIT_TIME must be HH:MM' <<<"$out" || { echo "$out" >&2; fail "an invalid AUDIT_TIME is not refused by name"; }
+pass "an invalid AUDIT_TIME stops the start"
+
+# A night missed while the container was down is still due at the next start: a start keeps the
+# job's due time, and only a changed AUDIT_TIME moves it.
+next_run() { in_data 'cat /d/cron/jobs.json' | node -e '
+  const jobs = JSON.parse(require("fs").readFileSync(0, "utf8")).jobs.filter((j) => j.name === "composer-audit");
+  console.log(jobs.map((j) => `${j.schedule.expr} ${j.next_run_at}`).join("\n"));'; }
+overdue=2026-01-01T03:30:00+00:00
+in_data "node -e '
+  const fs = require(\"fs\");
+  const store = JSON.parse(fs.readFileSync(\"/d/cron/jobs.json\", \"utf8\"));
+  for (const job of store.jobs) if (job.name === \"composer-audit\") job.next_run_at = \"$overdue\";
+  fs.writeFileSync(\"/d/cron/jobs.json\", JSON.stringify(store, null, 2));'" || fail "cannot make the composer-audit job overdue"
+out="$(start --rm "$IMAGE" check 2>&1)" || { echo "$out" >&2; fail "check mode failed over an overdue job"; }
+[ "$(next_run)" = "30 3 * * * $overdue" ] || { next_run >&2; fail "a start moved the overdue composer-audit job, so a missed night is not caught up"; }
+pass "a start keeps an overdue composer-audit job due"
+out="$(start --rm -e AUDIT_TIME=04:15 "$IMAGE" check 2>&1)" || { echo "$out" >&2; fail "check mode failed with AUDIT_TIME=04:15"; }
+moved="$(next_run)"
+[ "${moved%% 20*}" = "15 4 * * *" ] && [ "${moved#15 4 \* \* \* }" != "$overdue" ] \
+  || { echo "$moved" >&2; fail "a changed AUDIT_TIME does not reschedule the composer-audit job"; }
+out="$(start --rm "$IMAGE" check 2>&1)" || { echo "$out" >&2; fail "check mode failed back at the default AUDIT_TIME"; }
+[ "$(jobs)" = "30 3 * * * slack:C0000000001 composer-audit true" ] || { jobs >&2; fail "the default AUDIT_TIME does not come back"; }
+pass "a changed AUDIT_TIME reschedules the composer-audit job"
 
 # The tests are not in the image (.dockerignore); piped in rather than mounted, for CI's Docker-in-Docker.
 tar -C plugins -cf - bot-channels | docker run -i --rm -e PM_BOT_REQUIRE_HERMES=1 --entrypoint sh "$IMAGE" -c \
@@ -214,5 +322,32 @@ docker kill -s KILL "$name" >/dev/null
 in_data 'test -f /d/gateway_state.json && sed -i -E "s/\"gateway_state\": *\"[a-z_]+\"/\"gateway_state\": \"running\"/" /d/gateway_state.json && grep -q "\"gateway_state\": \"running\"" /d/gateway_state.json' \
   || fail "the killed gateway left no state file to restart from"
 run_bot "start after the container was killed"
+docker rm -f "$name" >/dev/null 2>&1 || true
+[ "$(jobs)" = "30 3 * * * slack:C0000000001 composer-audit true" ] || { jobs >&2; fail "starts left more or less than one composer-audit job"; }
+pass "three starts keep exactly one composer-audit job"
+
+# A job store that exists but cannot be read is left alone: the start registers no second job.
+in_data 'cp /d/cron/jobs.json /d/cron/jobs.ok && echo "{ not json" >/d/cron/jobs.json' || fail "cannot corrupt the job store"
+out="$(start --rm "$IMAGE" check 2>&1)" || { echo "$out" >&2; fail "check mode failed with an unreadable job store"; }
+grep -qF 'pm-bot: cannot read the cron job store' <<<"$out" && grep -qF 'composer-audit is not registered' <<<"$out" \
+  || { echo "$out" >&2; fail "an unreadable job store is not named with the skipped registration"; }
+[ "$(in_data 'cat /d/cron/jobs.json')" = '{ not json' ] || fail "the start changed an unreadable job store"
+in_data 'mv /d/cron/jobs.ok /d/cron/jobs.json' || fail "cannot restore the job store"
+pass "an unreadable job store gets no second composer-audit job"
+
+# With the audit off, a job store it cannot read is named, and the start does not claim the audit is off.
+in_data 'cp /d/cron/jobs.json /d/cron/jobs.ok && echo "{ not json" >/d/cron/jobs.json' || fail "cannot corrupt the job store"
+out="$(start --rm -e AUDIT_ENABLED=false "$IMAGE" check 2>&1)" || { echo "$out" >&2; fail "check mode failed with AUDIT_ENABLED=false and an unreadable job store"; }
+grep -qF 'pm-bot: cannot read the cron job store' <<<"$out" && grep -qF 'composer-audit may still run' <<<"$out" \
+  && ! grep -qF 'the nightly composer audit is off' <<<"$out" \
+  || { echo "$out" >&2; fail "AUDIT_ENABLED=false with an unreadable job store claims the audit is off"; }
+in_data 'mv /d/cron/jobs.ok /d/cron/jobs.json' || fail "cannot restore the job store"
+pass "AUDIT_ENABLED=false names an unreadable job store instead of claiming the audit is off"
+
+# With the audit off, its time is not read: an invalid AUDIT_TIME does not stop the start.
+out="$(start --rm -e AUDIT_ENABLED=false -e AUDIT_TIME=25:00 "$IMAGE" check 2>&1)" || { echo "$out" >&2; fail "check mode failed with AUDIT_ENABLED=false and AUDIT_TIME=25:00"; }
+[ "$(grep -c 'pm-bot: the nightly composer audit is off' <<<"$out")" = 1 ] || { echo "$out" >&2; fail "AUDIT_ENABLED=false does not log one line"; }
+[ -z "$(jobs)" ] || { jobs >&2; fail "AUDIT_ENABLED=false keeps the composer-audit job"; }
+pass "AUDIT_ENABLED=false removes the job with one log line and ignores AUDIT_TIME"
 
 echo "OK: pm-bot image check holds"

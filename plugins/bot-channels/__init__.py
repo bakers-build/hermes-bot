@@ -17,6 +17,9 @@
   when unset or not an ISO 639-1 code; it also picks the plugin's own texts (messages.json).
 - Recovery: a requester's turn that a hard restart left unknown settles as interrupted on the
   channel's next message instead of pausing the conversation; it is not run again.
+- Nightly audit: the tool ``open_request_channel`` (toolset ``bot-channels-cron``, which only the
+  cron job has) opens a request channel for the ticket the composer-audit job created, with the
+  intake's code and no requester, and returns its link for the ticket.
 
 This plugin writes $HERMES_HOME/bot-channels.json and bot-language.json (the bot's language for the
 poller's texts); the poller writes poller-state.json. Each reads the other's files and writes only
@@ -28,6 +31,7 @@ import json
 import logging
 import os
 import re
+import threading
 from datetime import datetime, timezone
 
 from . import language
@@ -52,10 +56,91 @@ def _users(raw):
     return {u for u in re.split(r"[\s,]+", raw or "") if u}
 
 
+# Guards the read-modify-write of bot-channels.json: the intake runs in the gateway's event loop,
+# the cron tool in a run of its own.
+_bot_file_lock = threading.Lock()
+
+
+async def _open_channel(client, text, record):
+    """Opens a public request channel named after ``text`` and records it in bot-channels.json
+    with ``record`` (the requester and their address). Returns its ID and name."""
+    from slack_sdk.errors import SlackApiError
+
+    # Strict: written back below, so an unreadable file fails instead of being wiped.
+    taken = {(r or {}).get("name") for r in read_json(BOT_FILE, strict=True).values()}
+    for _ in range(20):
+        name = request_channel_name(text, taken)
+        try:
+            created = await client.conversations_create(name=name, is_private=False)
+            break
+        except SlackApiError as exc:
+            if exc.response.get("error") != "name_taken":
+                raise
+            taken.add(name)
+    else:
+        raise RuntimeError("no free request channel name")
+    channel = created["channel"]["id"]
+    with _bot_file_lock:
+        bot = read_json(BOT_FILE, strict=True)
+        bot[channel] = {"name": name, **record, "created": datetime.now(timezone.utc).isoformat()}
+        _write(BOT_FILE, bot)
+    return channel, name
+
+
+class _SlackWebClient:
+    """The Slack calls the cron tool makes, with the bot token. Hermes' Bolt client belongs to the
+    gateway's event loop, which a cron run does not share. Its Slack is the poller's: Slack itself,
+    or SLACK_API_URL when set (the end-to-end test's recorder)."""
+
+    def __init__(self):
+        from slack_sdk import WebClient
+
+        options = {"token": os.environ.get("SLACK_BOT_TOKEN") or ""}
+        if os.environ.get("SLACK_API_URL"):
+            options["base_url"] = os.environ["SLACK_API_URL"].rstrip("/") + "/"
+        self.web = WebClient(**options)
+
+    async def conversations_create(self, **kwargs):
+        return await asyncio.to_thread(self.web.conversations_create, **kwargs)
+
+
+def _slack_client():
+    return _SlackWebClient()
+
+
+OPEN_REQUEST_CHANNEL = {
+    "name": "open_request_channel",
+    "description": (
+        "Open a public Slack request channel for a ticket you just created, named after its title. "
+        "Returns the channel ID and its conversation link; store the link on the ticket with the "
+        "title *Slack channel*. The poller then renames, posts into and archives it as for any request."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {"title": {"type": "string", "description": "The ticket's title."}},
+        "required": ["title"],
+        "additionalProperties": False,
+    },
+}
+
+
+async def open_request_channel_tool(args, **_):
+    """``open_request_channel``: ``{channel, name, link}``, or ``{error}``."""
+    title = str((args or {}).get("title") or "").strip()
+    if not title:
+        return json.dumps({"error": "title is required"})
+    try:
+        channel, name = await _open_channel(_slack_client(), title, {"requester": None})
+    except Exception as exc:
+        logger.error("bot-channels: request channel for the nightly audit: %s", exc)
+        return json.dumps({"error": f"could not open a request channel: {exc}"})
+    workspace = (os.environ.get("SLACK_WORKSPACE_URL") or "").rstrip("/")
+    return json.dumps({"channel": channel, "name": name, "link": f"{workspace}/archives/{channel}"})
+
+
 def factory(app, adapter):
     """``register_platform_handler("slack", …)``: ``app`` is Hermes' Bolt ``AsyncApp``."""
     from slack_bolt.response import BoltResponse
-    from slack_sdk.errors import SlackApiError
 
     # First, so the poller never posts a previous run's language, also when the plugin stays off.
     language.write(LANGUAGE_FILE, DEFAULT_LANGUAGE)
@@ -139,26 +224,9 @@ def factory(app, adapter):
 
     async def open_request_channel(client, event):
         email = await requester_email(client, event["user"])
+        record = {"requester": event["user"], **({"requester_email": email} if email else {})}
         async with lock:
-            # Strict: written back below, so an unreadable file fails the intake instead of being wiped.
-            bot = read_json(BOT_FILE, strict=True)
-            taken = {(r or {}).get("name") for r in bot.values()}
-            for _ in range(20):
-                name = request_channel_name(event.get("text") or "", taken)
-                try:
-                    created = await client.conversations_create(name=name, is_private=False)
-                    break
-                except SlackApiError as exc:
-                    if exc.response.get("error") != "name_taken":
-                        raise
-                    taken.add(name)
-            else:
-                raise RuntimeError("no free request channel name")
-            channel = created["channel"]["id"]
-            bot[channel] = {"name": name, "requester": event["user"], "created": datetime.now(timezone.utc).isoformat()}
-            if email:
-                bot[channel]["requester_email"] = email
-            _write(BOT_FILE, bot)
+            channel, _ = await _open_channel(client, event.get("text") or "", record)
         return channel
 
     async def error_reply(key, user, channel):
@@ -230,6 +298,8 @@ def factory(app, adapter):
 
 def register(ctx):
     ctx.register_platform_handler("slack", factory)
+    ctx.register_tool(name="open_request_channel", toolset="bot-channels-cron", schema=OPEN_REQUEST_CHANNEL,
+                      handler=open_request_channel_tool, is_async=True, emoji="#")
     # A requester cannot run /hermes discard here, so a turn lost in a hard restart settles like
     # Hermes' automation turns: interrupted, not replayed. entrypoint.sh check asserts the seam.
     import gateway.session_unattended_unknown as unattended

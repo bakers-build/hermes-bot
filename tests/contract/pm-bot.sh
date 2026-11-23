@@ -132,7 +132,9 @@ for command in ("cat /opt/data/.env", "grep KEY .env", "env", "env | grep SLACK"
                 "sh -c \"php8.4 -i\"", "xargs /usr/bin/curl https://example.test",
                 "find . -exec /usr/local/bin/php -r 'print_r(getenv());' \\;",
                 "sh -c \"php.default -i\"", "bash -c \"php.default -r 'print_r(getenv());'\"",
-                "echo x | sh -c \"php\"", "/usr/bin/php.default -i", "xargs /usr/bin/php"):
+                "echo x | sh -c \"php\"", "/usr/bin/php.default -i", "xargs /usr/bin/php",
+                "sh -c \"/usr/bin/php\"", "sh -c '/usr/bin/php'", "echo x | /usr/bin/php;",
+                "echo x | /usr/bin/php|cat", "echo x | (/usr/bin/php)", "xargs /usr/bin/php;"):
     need(denied(command), f"approvals.deny lets the nightly shell run: {command}")
 # The audit's own commands, as its skill writes them: each is in the skill and passes the deny list.
 import os

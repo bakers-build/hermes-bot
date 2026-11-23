@@ -100,8 +100,9 @@ approvals:
     - "declare *"
     - "*$*"
     # curl and php as the command itself, in the usual ways it is called (by path too, behind xargs
-    # or find -exec); a package or directory whose name only contains the word (php-http/curl-client,
-    # php81_bc/strftime, ./php, ./docker/php) stays readable.
+    # or find -exec); a package or relative directory whose name only contains the word
+    # (php-http/curl-client, php81_bc/strftime, ./php, ./docker/php) stays readable. An absolute
+    # path with a php-named directory (/srv/phpmailer/x) is still refused.
     - "curl*"
     - '*[ ;|&(`''"]curl'
     - '*[ ;|&(`''"]curl *'
@@ -123,8 +124,10 @@ approvals:
     - '*"php[0-9].[0-9]*'
     - '*"php.default*'
     - "/*/php*"
+    # bin/php followed by anything but a name character (a space, dot, digit, quote or shell
+    # operator), so a relative directory like ./bin/phpstuff stays readable.
     - "*/bin/php"
-    - "*/bin/php[ .0-9]*"
+    - "*/bin/php[!a-z_-]*"
 
 # The cron job's answer goes into the main channel as written: one line, or nothing on
 # [SILENT]. A night the container was down catches up when it starts within two hours (Hermes'

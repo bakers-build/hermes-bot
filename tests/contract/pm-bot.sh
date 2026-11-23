@@ -128,7 +128,9 @@ for command in ("cat /opt/data/.env", "grep KEY .env", "env", "env | grep SLACK"
                 "python3 -c 'import os; print(os.getenv(\"BAKERS_API_KEY\"))'",
                 "php -r 'print_r(getenv());'", "php -i", "php -a", "php -d display_errors=1 -r 'echo 1;'",
                 "php /tmp/env.php", "php8.4 -i", "/usr/local/bin/php -r 'print_r(getenv());'",
-                "echo '<?php print_r(getenv());' | php", "sh -c 'php -i'"):
+                "echo '<?php print_r(getenv());' | php", "sh -c 'php -i'", "sh -c \"php -i\"",
+                "sh -c \"php8.4 -i\"", "xargs /usr/bin/curl https://example.test",
+                "find . -exec /usr/local/bin/php -r 'print_r(getenv());' \\;"):
     need(denied(command), f"approvals.deny lets the nightly shell run: {command}")
 # The audit's own commands, as its skill writes them: each is in the skill and passes the deny list.
 import os
@@ -144,7 +146,8 @@ for command in ("cat /opt/data/clone-pulled.json",
 # Filled in with real directories and package names, the skill's commands still pass: Hermes
 # matches a glob against the whole command, so a denied word in a name would refuse it.
 import re
-names = ("drupal/environment_indicator", "sebastian/environment", "php-http/curl-client", "phpunit/phpunit")
+names = ("drupal/environment_indicator", "sebastian/environment", "php-http/curl-client", "phpunit/phpunit",
+         "php81_bc/strftime")
 dirs = (".", "./web/themes/custom/yf", "./libraries/phpmailer", "./php", "./docker/php", "./src/PHP")
 for template in re.findall(r"`((?:find|composer audit|grep|cat|date) [^`]*)`", skill):
     for name in names:

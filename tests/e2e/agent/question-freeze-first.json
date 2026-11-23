@@ -1,0 +1,7 @@
+{
+  "about": "A run that asks a question and freezes the ticket; its Question label reaches the ticket later (the scenario adds it once the poller saw the run end).",
+  "steps": [
+    { "tool": "bakers_comment_create", "args": { "ticket": "{{ticket}}", "type": "comment", "body": "# Question\n\nShould the login page remember a member for a month?" } },
+    { "tool": "bakers_ticket_update", "args": { "ticket": "{{ticket}}", "frozen": true } }
+  ]
+}

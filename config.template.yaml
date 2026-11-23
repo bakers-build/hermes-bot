@@ -11,6 +11,9 @@ _config_version: 51
 model:
   provider: anthropic
   default: ${PM_BOT_MODEL}
+  # https://api.anthropic.com (entrypoint.sh's default); the end-to-end test's scripted model
+  # sets another (tests/e2e).
+  base_url: ${PM_BOT_MODEL_BASE_URL}
 
 # Slack over Socket Mode; the bot and app tokens are read from $HERMES_HOME/.env.
 # Users: every user in the allowed channels by default (entrypoint.sh exports
@@ -28,6 +31,13 @@ slack:
   thread_require_mention: false
   reply_in_thread: false
 
+# The text the model writes beside its tool calls is a working note, not an answer: it stays out
+# of Slack, so the requester reads results and questions, in the bot's language.
+display:
+  platforms:
+    slack:
+      interim_assistant_messages: false
+
 # One shared session per channel: everyone in a request channel sees the same conversation.
 group_sessions_per_user: false
 
@@ -43,6 +53,14 @@ platform_toolsets:
     - session_search
     - mcp-clone-reader
     - mcp-bakers
+  # Hermes' CLI, through which the end-to-end test talks to the bot (entrypoint.sh agent):
+  # the same toolsets as in Slack.
+  cli:
+    - skills
+    - memory
+    - session_search
+    - mcp-clone-reader
+    - mcp-bakers
   # The nightly composer-audit job (entrypoint.sh registers it; its skill is skills/composer-audit):
   # a shell in the clone for `composer audit`, the bakers tools for the ticket, and the plugin's
   # tool that opens the ticket's channel. Only cron gets these; Slack keeps the list above.
@@ -52,9 +70,11 @@ platform_toolsets:
     - mcp-bakers
     - bot-channels-cron
 # Hermes enables a plugin's toolset on every platform unless the platform lists it here and
-# leaves it out of its own list: Slack does not get the cron job's channel tool.
+# leaves it out of its own list: Slack and the CLI do not get the cron job's channel tool.
 known_plugin_toolsets:
   slack:
+    - bot-channels-cron
+  cli:
     - bot-channels-cron
 
 # The cron job's shell. It starts in the read-only clone and needs only its skill's commands

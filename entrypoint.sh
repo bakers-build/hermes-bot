@@ -10,22 +10,39 @@
 #      poller state and the bot's channel list stay;
 #   4. registers the nightly composer-audit cron job by name (README.md › The nightly Composer
 #      audit), or removes it with AUDIT_ENABLED=false;
-#   5. runs the poller and the Hermes gateway. When either exits, the container exits and
-#      its restart policy starts it again.
+#   5. runs the poller and the Hermes gateway (mode agent: the poller only). When either exits,
+#      the container exits and its restart policy starts it again.
 #
 #   entrypoint.sh [run]   start the bot (the image's default)
 #   entrypoint.sh check   steps 1-4, then print the versions, shipped skills and plugins, assert the
 #                         Hermes internals the plugin relies on, test the connection to
 #                         bakers.build's MCP endpoint and exit (CI's image check)
+#   entrypoint.sh agent   steps 1-4 without Slack, then only the poller, in the foreground; no
+#                         gateway of its own. The end-to-end test (tests/e2e) talks to the bot
+#                         through `hermes chat` in the container, which brings up Hermes' gateway
+#                         for the CLI (no Slack without Slack tokens), and records the poller's
+#                         Slack calls.
 set -euo pipefail
 
 BOT=/opt/pm-bot
 DATA="${HERMES_HOME:-/opt/data}"
 mode="${1:-run}"
+case "$mode" in
+  run | check | agent) ;;
+  *) echo "usage: entrypoint.sh [run|check|agent]" >&2; exit 2 ;;
+esac
 
-REQUIRED=(SLACK_BOT_TOKEN SLACK_APP_TOKEN SLACK_ALLOWED_CHANNELS SLACK_ADMIN_USERS
-  SLACK_WORKSPACE_URL BAKERS_URL BAKERS_API_KEY PM_BOT_PROJECT
-  PM_BOT_TICKET_WORKFLOW PM_BOT_MODEL PM_BOT_CLONE_DIR)
+REQUIRED=(BAKERS_URL BAKERS_API_KEY PM_BOT_PROJECT PM_BOT_TICKET_WORKFLOW PM_BOT_MODEL PM_BOT_CLONE_DIR)
+if [ "$mode" = agent ]; then
+  # No Slack: the configuration and the poller still name these keys, so an empty one gets an
+  # inert value. The poller's calls go to SLACK_API_URL.
+  export SLACK_BOT_TOKEN="${SLACK_BOT_TOKEN:-xoxb-agent}" SLACK_APP_TOKEN="${SLACK_APP_TOKEN:-xapp-agent}" \
+    SLACK_ALLOWED_CHANNELS="${SLACK_ALLOWED_CHANNELS:-C0000000000}" SLACK_ADMIN_USERS="${SLACK_ADMIN_USERS:-U0000000000}" \
+    SLACK_WORKSPACE_URL="${SLACK_WORKSPACE_URL:-https://slack.invalid}"
+else
+  # The Slack keys first, as the missing ones are named in that order.
+  REQUIRED=(SLACK_BOT_TOKEN SLACK_APP_TOKEN SLACK_ALLOWED_CHANNELS SLACK_ADMIN_USERS SLACK_WORKSPACE_URL "${REQUIRED[@]}")
+fi
 missing=()
 for key in "${REQUIRED[@]}"; do
   [ -n "${!key:-}" ] || missing+=("$key")
@@ -41,6 +58,8 @@ esac
 [ -n "${SLACK_ALLOWED_USERS:-}" ] || export GATEWAY_ALLOW_ALL_USERS=true
 # The conductor is optional; the render refuses empty values, so SOUL.md reads "none".
 export PM_BOT_CONDUCTOR_TEXT="${PM_BOT_CONDUCTOR:-none}"
+# Anthropic's own endpoint unless the env names another (the end-to-end test's scripted model).
+export PM_BOT_MODEL_BASE_URL="${PM_BOT_MODEL_BASE_URL:-https://api.anthropic.com}"
 
 node "$BOT/render.mjs" "$BOT/config.template.yaml" "$DATA/config.yaml"
 node "$BOT/render.mjs" "$BOT/SOUL.template.md" "$DATA/SOUL.md"
@@ -178,13 +197,16 @@ PY
   )
   exit 0
 fi
-[ "$mode" = run ] || { echo "usage: entrypoint.sh [run|check]" >&2; exit 2; }
+
+# German until the plugin writes this run's language; the poller starts before the plugin.
+rm -f "$DATA/bot-language.json"
+if [ "$mode" = agent ]; then
+  exec node "$BOT/poller/poller.mjs"
+fi
 
 pids=()
 stop() { kill -TERM "${pids[@]}" 2>/dev/null || true; }
 trap stop TERM INT
-# German until the plugin writes this run's language; the poller starts before the plugin.
-rm -f "$DATA/bot-language.json"
 node "$BOT/poller/poller.mjs" &
 pids+=($!)
 hermes gateway run &

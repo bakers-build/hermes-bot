@@ -57,3 +57,20 @@ test('SOUL.template.md renders from the fixture env with no placeholder left', a
   // Every PM bot replies with the ticket link the server returned.
   assert.match(out, /\[<identifier> · <title>\]\(<url>\).*`url`.*`bakers_ticket_create`/);
 });
+
+test('config.template.yaml renders from the fixture env, the model endpoint as the entrypoint defaults it', async () => {
+  const { readFileSync } = await import('node:fs');
+  const env = Object.fromEntries(
+    readFileSync(new URL('./test/fixture.env', import.meta.url), 'utf8')
+      .split('\n')
+      .filter((line) => /^[A-Z_]+=/.test(line))
+      .map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]),
+  );
+  const template = readFileSync(new URL('./config.template.yaml', import.meta.url), 'utf8');
+  assert.throws(() => render(template, env), /PM_BOT_MODEL_BASE_URL is not set/);
+  // entrypoint.sh: Anthropic's own endpoint unless the env names another.
+  const out = render(template, { ...env, PM_BOT_MODEL_BASE_URL: 'https://api.anthropic.com' });
+  assert.match(out, /^ {2}base_url: https:\/\/api\.anthropic\.com$/m);
+  assert.doesNotMatch(out.replace(/\$\{env:\w+\}/g, ''), /\$\{/);
+  assert.match(render(template, { ...env, PM_BOT_MODEL_BASE_URL: 'http://model/anthropic' }), /^ {2}base_url: http:\/\/model\/anthropic$/m);
+});

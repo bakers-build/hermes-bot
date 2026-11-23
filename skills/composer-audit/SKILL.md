@@ -35,7 +35,7 @@ In each such directory `<dir>` (as `find` printed it, for example `./web/themes/
 |---|---|
 | lock file | `<dir>/composer.lock` |
 | package | `packageName` |
-| installed | the `"version"` line right under `"name": "<package>",` in the output of `grep -A1 '"name": ' <dir>/composer.lock`, run once per lock file |
+| installed | the `"version"` line that `grep -A1 '"name": "<package>",' <dir>/composer.lock` prints under the name, run once per affected package |
 | fixed in | the `<` bound of the `affectedVersions` range the installed version falls in; `none yet` without one |
 | severity | `severity`, or `unknown` |
 | CVE/link | `cve` linked to `link`; the `advisoryId` when there is no CVE |

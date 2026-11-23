@@ -166,7 +166,7 @@ audit_out="$(docker run --rm -i --network none -u hermes --entrypoint sh "$IMAGE
   chmod -R a-w /tmp/clone
   find . \( -name composer.lock -o -name composer.json \) -not -path "*/.git/*" -not -path "*/vendor/*" -not -path "*/node_modules/*" | sort
   composer audit --locked --format=json --no-plugins --no-scripts --abandoned=ignore --working-dir=./empty; echo "empty rc=$?"
-  grep -A1 "\"name\": " ./one/composer.lock; echo "show rc=$?"
+  grep -A1 "\"name\": \"psr/log\"," ./one/composer.lock; echo "show rc=$?"
   composer audit --locked --format=json --no-plugins --no-scripts --abandoned=ignore --working-dir=./one; echo "one rc=$?"
   chmod -R u+w /tmp/clone; mkdir bad; echo "{}" >bad/composer.json
   echo "{\"packages\":[{\"name\":\"psr/log\",\"version\":\"3.0.2\",\"source\":{}}],\"packages-dev\":[]}" >bad/composer.lock

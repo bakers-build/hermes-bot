@@ -71,23 +71,30 @@ approvals:
     - "env"
     - "env *"
     - "*printenv*"
-    - "*environ*"
+    # environ as a whole word at the end (/proc/<pid>/environ); environment_indicator stays readable.
+    - "*environ"
+    - '*environ[ ;|&)''"<>]*'
     - "export"
     - "export *"
     - "set"
     - "declare *"
     - "*$*"
-    - "*curl*"
+    # curl and php as the command itself, however it is called; a package or directory whose name
+    # only contains the word (php-http/curl-client, ./php, ./docker/php) stays readable.
+    - "curl*"
+    - '*[ ;|&(`''"]curl'
+    - '*[ ;|&(`''"]curl *'
+    - "/*/curl*"
     - "*wget*"
     - "*node -e*"
     - "*node -p*"
     - "*node --e*"
     - "*node --p*"
     - "*python*"
-    # php itself, however it is called (php -r, -i, -a, a file); a directory named php-… stays readable.
     - "php*"
-    - '*[ ;|&(`''"/]php'
-    - '*[ ;|&(`''"/]php[ .0-9]*'
+    - '*[ ;|&(`''"]php'
+    - '*[ ;|&(`''"]php[ .0-9]*'
+    - "/*/php*"
 
 # The cron job's answer goes into the main channel as written: one line, or nothing on
 # [SILENT]. A night the container was down catches up when it starts within two hours (Hermes'

@@ -6,7 +6,9 @@
 //
 //   POST /api/<method>   chat.postMessage, conversations.create|invite|rename|archive|history
 //   GET  /_calls         every call: {method, token, body, at}
-//   POST /_reset         forget the calls and the channels
+//   POST /_refuse        {method, error, channel?}: the next call of that method (in that channel)
+//                        answers {ok: false, error} once; it is recorded with `refused`
+//   POST /_reset         forget the calls, the channels and the refusals
 //
 //   node tests/e2e/slack-recorder/recorder.mjs   # listens on PORT (80)
 
@@ -15,6 +17,7 @@ import { createServer } from 'node:http';
 export function createRecorder() {
   let calls = [];
   let channels = new Map(); // id → {name, archived, messages: [ts]}
+  let refusals = []; // {method, error, channel?}, each used once
   let clock = 0;
   let ids = 0;
 
@@ -74,6 +77,16 @@ export function createRecorder() {
     if (req.method === 'POST' && path === '/_reset') {
       calls = [];
       channels = new Map();
+      refusals = [];
+      return json({ ok: true });
+    }
+    if (req.method === 'POST' && path === '/_refuse') {
+      const { method, error, channel: id } = JSON.parse(raw || '{}');
+      if (!method || !error) {
+        res.writeHead(400);
+        return res.end('method and error are required');
+      }
+      refusals.push({ method, error, ...(id && { channel: id }) });
       return json({ ok: true });
     }
     const method = path.match(/^\/api\/([\w.]+)$/)?.[1];
@@ -88,7 +101,14 @@ export function createRecorder() {
     } catch {
       body = { raw };
     }
-    calls.push({ method, token: (req.headers.authorization ?? '').replace(/^Bearer /, ''), body, at: Date.now() });
+    const call = { method, token: (req.headers.authorization ?? '').replace(/^Bearer /, ''), body, at: Date.now() };
+    calls.push(call);
+    const refusal = refusals.findIndex((r) => r.method === method && (!r.channel || r.channel === body.channel));
+    if (refusal >= 0) {
+      const [{ error }] = refusals.splice(refusal, 1);
+      call.refused = error;
+      return json({ ok: false, error });
+    }
     return json(methods[method] ? methods[method](body) : { ok: false, error: 'unknown_method' });
   });
 }

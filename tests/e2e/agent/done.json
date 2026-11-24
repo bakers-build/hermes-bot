@@ -1,7 +1,7 @@
 {
-  "about": "A run that finishes its work: a summary, then the ticket moves to review.",
+  "about": "A run that finishes its work: a summary whose Outcome has a plain sentence and one with identifiers, and whose Manual review has links, then the ticket moves to review.",
   "steps": [
-    { "tool": "bakers_comment_create", "args": { "ticket": "{{ticket}}", "type": "summary", "body": "### 🎯 Outcome\n\nThe change is built (the end-to-end test's stub agent; nothing was changed).\n\n### ➡️ Next action\n\nCheck the result and accept it." } },
+    { "tool": "bakers_comment_create", "args": { "ticket": "{{ticket}}", "type": "summary", "body": "### 🎯 Outcome\n\nThe login page now remembers a member for a month. It is built on `members.module` for {{ticket}}.\n\n### 🧪 Manual review\n\n- Sign in on [the preview site](https://member-login.preview.e2e.test/members) and tick *Remember me*.\n- The design notes: https://notes.example.com/remember-me\n\n### ➡️ Next action\n\nCheck the result and accept it." } },
     { "tool": "bakers_ticket_transition", "args": { "ticket": "{{ticket}}", "state": "review" } }
   ]
 }

@@ -1,8 +1,10 @@
 // The end-to-end test's bakers.build executor: starts a run's launch command with `sh -c` in its
 // worktree, detached, output to $E2E_LOG_DIR/runs/<run id>.log, and kills it when the conductor
 // stops or cleans up the run. No terminal multiplexer. The project config loads it as its executor.
+// A script of the test (/e2e/agent/<identifier>.json) with `"launch": "fails"` makes the run's launch
+// fail once, as a broken setup does: the conductor then marks the run failed.
 import { spawn } from 'node:child_process';
-import { appendFileSync, mkdirSync, openSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const LOG_DIR = process.env.E2E_LOG_DIR || '/e2e/log';
@@ -42,6 +44,12 @@ class E2eExecutor {
 
   async startRun(input) {
     const { ticket, run, workspacePath, command, env } = input;
+    const script = `/e2e/agent/${ticket.identifier}.json`;
+    if (existsSync(script) && JSON.parse(readFileSync(script, 'utf8')).launch === 'fails') {
+      renameSync(script, `${script}.launch-failed`);
+      note('refuse', { ticket: ticket.identifier, run: run.uuid });
+      throw new Error(`the end-to-end test fails the launch of ${ticket.identifier}`);
+    }
     mkdirSync(RUN_DIR, { recursive: true });
     const logFile = join(RUN_DIR, `${run.id}.log`);
     const fd = openSync(logFile, 'a');

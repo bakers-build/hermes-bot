@@ -1,0 +1,4 @@
+{
+  "about": "A run whose launch fails, as a broken setup fails one: the e2e executor refuses to start it once, and the conductor marks the run failed. The run the conductor starts next finds no script and works on.",
+  "launch": "fails"
+}

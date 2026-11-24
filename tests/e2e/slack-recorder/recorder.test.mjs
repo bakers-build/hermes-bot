@@ -67,6 +67,22 @@ describe('Slack recorder', () => {
     assert.equal(await slack.lastMessage('C0E2E0001'), Number(ts) * 1000);
   });
 
+  it('given a refusal of a method in a channel, when the poller calls it twice there, then the first call fails with the error and is recorded, and the second succeeds', async () => {
+    const refuse = await fetch(`${base}/_refuse`, { method: 'POST', body: JSON.stringify({ method: 'chat.postMessage', channel: 'C0E2E0001', error: 'ratelimited' }) });
+    assert.equal(refuse.status, 200);
+    await slack.post({ channel: 'C0E2E0002', text: 'elsewhere' });
+    await assert.rejects(slack.post({ channel: 'C0E2E0001', text: 'done' }), (error) => error.code === 'ratelimited');
+    await slack.post({ channel: 'C0E2E0001', text: 'done' });
+    assert.deepEqual((await calls()).map((c) => [c.body.channel, c.refused ?? null]), [['C0E2E0002', null], ['C0E2E0001', 'ratelimited'], ['C0E2E0001', null]]);
+    assert.equal(await slack.lastMessage('C0E2E0001') !== null, true);
+  });
+
+  it('given a refusal without a channel, when the method is called, then the next call in any channel fails once', async () => {
+    await fetch(`${base}/_refuse`, { method: 'POST', body: JSON.stringify({ method: 'conversations.rename', error: 'internal_error' }) });
+    await assert.rejects(slack.rename('C0E2E0003', 'e2e-1-a'), (error) => error.code === 'internal_error');
+    await slack.rename('C0E2E0003', 'e2e-1-a');
+  });
+
   it('given an unknown method, when it is called, then it answers unknown_method and records it', async () => {
     const res = await fetch(`${base}/api/users.list`, { method: 'POST', body: '{}' });
     assert.deepEqual(await res.json(), { ok: false, error: 'unknown_method' });

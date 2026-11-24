@@ -4,11 +4,14 @@
 //               would hand it on: the channel's trusted line, then the sender's prefix
 //   site        bakers.build's tools on /mcp, as the bot (its service account) or the owner
 //   model       the scripted model's script and log
-//   slack       the Slack calls the poller made, from the recorder
+//   slack       the Slack calls the poller made, from the recorder, and a refusal of the next one
+//   says        whether a post holds one of the poller's fixed texts (poller/messages.json)
 //   agent       the stub agent's script for a ticket's next run
 //   channel     a request channel as the bot-channels plugin records it, for the poller
 //   audit       the nightly composer-audit job: the clone and pull marker it reads, a run, its answer
-//   restart     a service of the stack
+//   restart     a service of the stack; stop and start one
+//   drush       PHP on the site as its administrator, which works while nginx is down; origin, which
+//               no tool writes, through it
 //
 // run.sh exports E2E_COMPOSE (the compose arguments, project and files), E2E_OUT (the run's
 // directory, with seed.json) and E2E_MODE (scripted or real).
@@ -23,6 +26,17 @@ const COMPOSE = JSON.parse(process.env.E2E_COMPOSE ?? '[]');
 export const MODE = process.env.E2E_MODE ?? 'scripted';
 export const scripted = MODE === 'scripted';
 export const WORKSPACE_URL = 'https://e2e.slack.com';
+
+const MESSAGES = JSON.parse(readFileSync(new URL('../../../poller/messages.json', import.meta.url), 'utf8'));
+
+/**
+ * Whether `text` holds the poller's fixed text at `path` (`runPaused`, `states.done`) in any of its
+ * languages: the poller posts in the bot's language, which the bot-channels plugin may change.
+ */
+export const says = (text, path) =>
+  Object.values(MESSAGES)
+    .map((m) => path.split('.').reduce((v, k) => v?.[k], m))
+    .some((fixed) => typeof fixed === 'string' && text.includes(fixed));
 
 export const seed = OUT ? JSON.parse(readFileSync(join(OUT, 'seed.json'), 'utf8')) : {};
 
@@ -130,6 +144,11 @@ export const slack = {
   /** The poller's posts into a channel, oldest first. */
   posts: async (channel) => (await slack.calls()).filter((c) => c.method === 'chat.postMessage' && c.body.channel === channel).map((c) => c.body.text),
   of: async (method) => (await slack.calls()).filter((c) => c.method === method),
+  /** The next call of `method` (in `channel`, when given) answers `error` once, as a Slack outage does. */
+  async refuse(method, { channel, error = 'internal_error' } = {}) {
+    const res = await http('slack-recorder', 'POST', '/_refuse', { body: { method, error, channel } });
+    if (res.status !== 200) throw new Error(`slack refuse: ${res.status} ${res.text}`);
+  },
 };
 
 export const agent = {
@@ -150,6 +169,9 @@ export const agent = {
  * the bot's data directory): the poller renames, archives and reopens only those.
  */
 export function channel(id, { requester = 'U0E2EREQ', email = seed.requester_email } = {}) {
+  // E2E_RERUN (letters and digits) makes a rerun's channels new on a kept stack (--keep), whose
+  // recorder and poller still hold the earlier run's.
+  id += (process.env.E2E_RERUN ?? '').toUpperCase();
   const file = join(OUT, 'data', 'bot-channels.json');
   let bot = {};
   try {
@@ -226,6 +248,19 @@ export async function chat(text, { session, channel: ch, ticket = 'none yet', se
   return { text: result.text ?? '', session: result.session_id, events };
 }
 
+/** Stops a service, as an outage does. */
+export async function stop(service) {
+  await compose(['stop', service]);
+  delete ports[service];
+}
+
+/** Starts a stopped service and waits until compose reports it running. */
+export async function start(service) {
+  await compose(['start', service]);
+  delete ports[service];
+  await waitFor(`${service} running`, async () => (await compose(['ps', '--status', 'running', '--services'])).stdout.split('\n').includes(service));
+}
+
 /** Restarts a service and waits until compose reports it running. */
 export async function restart(service) {
   await compose(['restart', service]);
@@ -243,11 +278,11 @@ export async function ticketFor(ch, title) {
 }
 
 /**
- * Waits until the poller follows a ticket: its first pass over a ticket records the state and posts
- * nothing, so a move under test comes after it.
+ * Waits until the poller follows a ticket: its first pass over a ticket records the state, the runs,
+ * summaries and links and posts nothing, so a move under test comes after both records.
  */
 export function followed(identifier) {
-  return waitFor(`the poller following ${identifier}`, () => pollerState(identifier) !== undefined);
+  return waitFor(`the poller following ${identifier}`, () => pollerState(identifier) !== undefined && pollerRecord(identifier) !== null);
 }
 
 /** The state the poller last posted (or recorded) for a ticket. */
@@ -285,21 +320,40 @@ export function runEnded(identifier) {
 export const cancel = (identifier) => site.tool('bakers_ticket_transition', { ticket: identifier, state: 'cancelled' }, { as: 'owner' });
 
 /**
+ * Runs PHP through drush in the site's php container as its administrator, with `$ticket` the ticket
+ * `identifier`, and returns what it echoes. It reaches the site's database without nginx.
+ */
+export async function drush(identifier, php) {
+  const script = `
+    \\Drupal::service('account_switcher')->switchTo(\\Drupal::entityTypeManager()->getStorage('user')->load(1));
+    $ticket = current(\\Drupal::entityTypeManager()->getStorage('bb_ticket')->loadByProperties(['identifier' => '${identifier}']));
+    ${php}
+  `;
+  return (await compose(['exec', '-T', 'php', '/var/www/html/vendor/bin/drush', 'php:eval', script])).stdout.trim();
+}
+
+/**
  * Reopens a done ticket into working as the site's administrator, as a person does in the site's
  * UI: the tools change no closed ticket.
  */
 export async function reopen(identifier) {
-  const php = `
-    $storage = \\Drupal::entityTypeManager()->getStorage('bb_ticket');
-    $ticket = current($storage->loadByProperties(['identifier' => '${identifier}']));
-    \\Drupal::service('account_switcher')->switchTo(\\Drupal::entityTypeManager()->getStorage('user')->load(1));
+  const state = await drush(identifier, `
     $ticket->set('state', 'working');
     if ($ticket->hasField('closed')) { $ticket->set('closed', FALSE); }
     $ticket->save();
     echo $ticket->get('state')->value;
-  `;
-  const { stdout } = await compose(['exec', '-T', 'php', '/var/www/html/vendor/bin/drush', 'php:eval', php]);
-  if (stdout.trim() !== 'working') throw new Error(`reopening ${identifier}: ${stdout}`);
+  `);
+  if (state !== 'working') throw new Error(`reopening ${identifier}: ${state}`);
+}
+
+/** Sets a ticket's origin as the site's administrator: no tool writes it. */
+export async function origin(identifier, value) {
+  const saved = await drush(identifier, `
+    $ticket->set('origin', '${value}');
+    $ticket->save();
+    echo $ticket->get('origin')->value;
+  `);
+  if (saved !== value) throw new Error(`setting the origin of ${identifier}: ${saved}`);
 }
 
 /** Moves a ticket through the workflow's states, one transition each. */

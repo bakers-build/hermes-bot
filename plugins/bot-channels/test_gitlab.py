@@ -65,7 +65,7 @@ def note_event(iid=7, note=11, author=43, project=PROJECT, system=False):
             "issue": {"iid": iid}, "object_attributes": {"id": note, "note": "Only with the e-mail address.", "noteable_type": "Issue", "author_id": author, "system": system}}
 
 
-class SideTest(unittest.TestCase):
+class ChatModeTest(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
         for name, file in (("CONVERSATIONS_FILE", "conversations.json"), ("POLLER_FILE", "poller-state.json"), ("WEBHOOK_FILE", "gitlab-webhook.json")):
@@ -86,7 +86,7 @@ class SideTest(unittest.TestCase):
         pathlib.Path(self.dir, "poller-state.json").write_text(json.dumps({"channels": channels}))
 
 
-class Intake(SideTest):
+class Intake(ChatModeTest):
     def test_a_new_issue_is_acknowledged_recorded_and_handed_on_in_its_own_session(self):
         self.assertEqual(self.chat_mode.handle(issue_event()), "request")
         self.assertEqual(self.api.of("note"), [(7, "@alice Thanks, I've got your request and I'm looking into it. I'll answer here shortly.")])
@@ -127,7 +127,7 @@ class Intake(SideTest):
         self.assertEqual(len(self.handed), 1)
 
 
-class Conversation(SideTest):
+class Conversation(ChatModeTest):
     def setUp(self):
         super().setUp()
         self.chat_mode.handle(issue_event())
@@ -159,7 +159,7 @@ class Conversation(SideTest):
         self.assertEqual(self.handed, [])
 
 
-class Webhook(SideTest):
+class Webhook(ChatModeTest):
     def test_only_the_hooks_secret_counts(self):
         self.assertTrue(self.chat_mode.verify({"X-Gitlab-Token": self.chat_mode.secret}))
         self.assertFalse(self.chat_mode.verify({"X-Gitlab-Token": "guess"}))
@@ -204,7 +204,7 @@ class Webhook(SideTest):
         self.assertIn("gitlab: webhook https://bot.example/webhooks/gitlab not registered", logs.output[0])
 
 
-class CatchUp(SideTest):
+class CatchUp(ChatModeTest):
     def test_the_first_start_handles_none_of_the_existing_issues(self):
         self.api.issues = [{"iid": 3, "title": "Old", "author": {"id": 42, "username": "alice"}, "state": "opened"}]
         self.chat_mode.catch_up()

@@ -106,6 +106,34 @@ GitHub CI runs the first three in its `tests` job; its `image` job builds the im
 
 The scenarios (`tests/e2e/scenarios/`) assert what the site and the recorder hold, never wording. `--only <scenario>` runs one scenario file, named without `.e2e.mjs` (e.g. `--only questions`), `--keep` leaves the stack running (`bash tests/e2e/run.sh down` removes it), `--real` uses a real model for the bot and Claude Code for the conductor (`ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`; a failure may then be the model's). A failed run leaves the stack's logs, the model's turns, the Slack calls, the poller's state, the advisory requests and the audit's runs in `tests/e2e/out/logs/`.
 
+## Look at it in Hermes WebUI
+
+For local use only: a first look at the bot's Hermes in [Hermes WebUI](https://github.com/nesquena/hermes-webui) (0.52.732, pinned by digest in `webui/compose.yaml`), without Slack and without a workspace. Several people sign in with their bakers.build account and talk to the one bot, each in their own profile and sessions. It is no deployment: `compose.yaml` and the image stay as they are, and a bot started from them serves no web UI. Its identity provider is the end-to-end test's bakers.build, and every port listens on `127.0.0.1` only.
+
+Once, on this machine:
+
+```sh
+echo '127.0.0.1 nginx' | sudo tee -a /etc/hosts               # the site answers to the host name nginx alone
+tests/e2e/run.sh ghcr.io/bakers-build/hermes-bot:main --keep --only status   # the site, seeded; leaves it running
+install -m 600 webui/.env.example webui/.env                     # then fill in PM_BOT_CLONE and the model credential
+webui/register-client.sh                                         # the site's bot key, project, OAuth client and users
+```
+
+Then start and stop it:
+
+```sh
+docker compose -f webui/compose.yaml up      # then open http://127.0.0.1:8787
+docker compose -f webui/compose.yaml down
+```
+
+**Sign in.** The site sends no mail, so it signs people in with a one-time link: `docker exec pm-bot-e2e-php-1 /var/www/html/vendor/bin/drush user:login --name=e2e-owner --uri=http://nginx:8788` prints one; open it, then http://127.0.0.1:8787, and allow the access. The seeded users are `e2e-owner` (owner@example.test) and `e2e-requester` (requester@example.test); a second person uses the other in a second browser.
+
+**`webui/.env`.** You fill in the model credential (`ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`), `PM_BOT_CLONE`, the absolute path of a clone of the project, and `WEBUI_USERS`, each user's bakers.build e-mail address and own profile (`owner@example.test=owner,…`). `webui/register-client.sh` writes `BAKERS_URL`, the bot's `BAKERS_API_KEY`, `PM_BOT_PROJECT` and `PM_BOT_CONDUCTOR` from `tests/e2e/out/seed.json`, the OAuth client, a cookie secret, and `HERMES_WEBUI_GROUP_PROFILE_MAP`, the users by bakers.build user ID: the site tells the proxy nothing about a user but that ID. Run it again after changing `WEBUI_USERS` and after the site was removed (`tests/e2e/run.sh down`, or any e2e run without `--keep`): a new site knows neither the client nor the users. `PM_BOT_IMAGE` picks the bot image (default `ghcr.io/bakers-build/hermes-bot:main`). The Slack values stay inert, and `AUDIT_ENABLED=false` keeps the nightly job out. The published image is amd64 only: on Apple silicon add `DOCKER_DEFAULT_PLATFORM=linux/amd64` to `webui/.env`, and everything runs emulated.
+
+**How it fits together.** `prepare` runs the bot image's `entrypoint.sh check` once, so the Hermes home holds the bot's config, persona, skills and plugin and has reached bakers.build's `/mcp`. `setup` installs the Anthropic and MCP packages into Hermes' dependency environment and renders one profile per user: the bot's home, plus the trusted line of a request channel that names the user as the requester, so a ticket the bot opens from their session names them as the reviewer. `oauth2-proxy` signs people in at bakers.build and passes their user ID to the web UI, which trusts it from the proxy's address alone and binds the user to their profile. `bakers-front` serves the site to the browser as http://nginx:8788. `down -v` wipes the home with its sessions, and is needed after changing or pulling `PM_BOT_IMAGE`. Run it once as well when a home from before the sign-in exists: its dependency environment lacks the MCP package. The web UI runs no clone reader (its container has no working Node).
+
+**What stays open.** Every signed-in user reaches the web UI's terminal, workspace file browser (edit and delete), settings, cron and skills, and can edit their profile's persona and trusted line. The separation of profiles holds in the web UI's pages only: the terminal and the file browser reach every profile and the bot's home, and the terminal sees every value of `webui/.env`, its secrets included (the web UI's container gets that env file). Anyone else with an account on the site who signs in lands in the profile `default`, the bot's own home. Keep it on this machine.
+
 ## Test it by hand
 
 On a workspace running the bot, with the service user's profile set and the Slack app reinstalled with `channels:manage`, `reactions:write` and `users:read.email`, and three people or places: the **requester**, a **second member**, and an **outsider channel** the bot was invited to but did not open. Record each step with its channel name and link and the ticket as bakers.build shows it.

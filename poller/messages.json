@@ -15,6 +15,8 @@
     "technicalProblemLead": "Die Arbeit am Ticket „{title}“ hängt an einem technischen Problem, das keytec lösen muss:",
     "reopened": "Das frühere Gespräch zu dieser Anfrage steht in {previous}.",
     "abandoned": "Hier wurde eine Woche lang nichts geschrieben, daher wird diese Anfrage ohne Ticket geschlossen. Um neu anzufangen, erwähne den Bot in seinem Hauptkanal.",
+    "abandonedIssue": "Hier wurde eine Woche lang nichts geschrieben, daher wird diese Anfrage ohne Ticket geschlossen. Um neu anzufangen, eröffne ein neues Issue.",
+    "ticketNote": "Für diese Anfrage gibt es jetzt ein Ticket:",
     "runStart": {
       "qualification": "Wir sehen uns deine Anfrage an.",
       "plan": "Wir schreiben auf, wie wir es umsetzen.",
@@ -43,6 +45,8 @@
     "technicalProblemLead": "The work on the \"{title}\" ticket is stuck on a technical problem that keytec has to solve:",
     "reopened": "The earlier conversation on this request is in {previous}.",
     "abandoned": "Nothing was written here for a week, so this request is closed without a ticket. To start again, mention the bot in its main channel.",
+    "abandonedIssue": "Nothing has been written here for a week, so this request is closed without a ticket. To start again, open a new issue.",
+    "ticketNote": "This request now has a ticket:",
     "runStart": {
       "qualification": "We are looking at your request.",
       "plan": "We are writing up how to do it.",

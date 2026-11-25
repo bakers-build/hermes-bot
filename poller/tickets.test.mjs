@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { conversation, conversations } from './tickets.mjs';
+import { conversation } from './sides/slack.mjs';
+import { conversations } from './tickets.mjs';
 
 const slack = (channel, p, kind = 'chat') => ({ uri: `https://acme.slack.com/archives/${channel}/p${p}`, title: 'Slack thread', options: kind ? { bakers: { kind } } : [] });
 

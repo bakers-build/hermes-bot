@@ -130,3 +130,55 @@ export async function slackStub(answers = {}) {
     close: () => new Promise((resolve) => (server.closeAllConnections(), server.close(resolve))),
   };
 }
+
+/**
+ * A GitLab REST API stub at `${url}/api/v4`: records `{method, path, body}` of every request and
+ * answers the issue and note calls the poller makes. Every request must carry `PRIVATE-TOKEN`
+ * (default `glpat-test`). `issues[iid]` holds `{state, created_at}`, `notes[iid]` the notes,
+ * oldest first; `fail(method, pathPart)` refuses matching requests with 500 until `heal()`.
+ */
+export async function gitlabStub({ token = 'glpat-test', project = 'acme/shop' } = {}) {
+  const calls = [];
+  const issues = {};
+  const notes = {};
+  let failing = [];
+  let id = 100;
+  const base = `/api/v4/projects/${encodeURIComponent(project)}/issues/`;
+  const server = await listen(async (r) => {
+    const body = r.raw ? JSON.parse(r.raw) : undefined;
+    calls.push({ method: r.method, path: r.path, query: Object.fromEntries(r.query), body });
+    if (r.headers['private-token'] !== token) return { status: 401, body: { message: '401 Unauthorized' } };
+    if (failing.some(([m, part]) => m === r.method && r.path.includes(part))) return { status: 500, body: { message: 'stubbed failure' } };
+    if (!r.path.startsWith(base)) return { status: 404, body: { message: '404 Project Not Found' } };
+    const [iid, sub] = r.path.slice(base.length).split('/');
+    const issue = (issues[iid] ??= { state: 'opened', created_at: '2026-11-01T12:00:00Z' });
+    if (sub === 'notes' && r.method === 'POST') {
+      const note = { id: ++id, body: body.body, created_at: new Date().toISOString(), author: { id: 99, username: 'pm-bot' } };
+      (notes[iid] ??= []).push(note);
+      return { status: 201, body: note };
+    }
+    if (sub === 'notes' && r.method === 'GET') {
+      const list = [...(notes[iid] ?? [])];
+      if (r.query.get('sort') === 'desc') list.reverse();
+      return { body: list.slice(0, Number(r.query.get('per_page') ?? 20)) };
+    }
+    if (!sub && r.method === 'PUT') {
+      issue.state = body.state_event === 'close' ? 'closed' : 'opened';
+      return { body: { iid: Number(iid), ...issue } };
+    }
+    if (!sub && r.method === 'GET') return { body: { iid: Number(iid), ...issue } };
+    return { status: 404, body: { message: '404 Not found' } };
+  });
+  return {
+    url: `http://127.0.0.1:${server.address().port}`,
+    project,
+    calls,
+    issues,
+    notes,
+    // The poller's notes, as {iid, body}, oldest first.
+    posts: () => calls.filter((c) => c.method === 'POST' && c.path.endsWith('/notes')).map((c) => ({ iid: c.path.split('/').at(-2), body: c.body.body })),
+    fail: (method, part) => failing.push([method, part]),
+    heal: () => (failing = []),
+    close: () => new Promise((resolve) => (server.closeAllConnections(), server.close(resolve))),
+  };
+}

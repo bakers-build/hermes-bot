@@ -52,6 +52,10 @@
 #   - platform_toolsets.cli equals .slack, model.base_url comes from PM_BOT_MODEL_BASE_URL
 #     (default Anthropic's), and mode agent runs the poller without the gateway
 #   - CI's image job runs the end-to-end test on the image it built, before Publish
+#   - the local web UI (webui/): both images pinned by digest, only the sign-in proxy published
+#     and on 127.0.0.1, the web UI trusting identity headers from the proxy's address alone, the
+#     user's bakers.build ID as the group that picks their profile; the example env sets no
+#     nightly job and inert Slack values, and the real env is ignored
 # Needs python3 with PyYAML.
 # ---------------------------------------------------------------------------
 set -euo pipefail
@@ -262,8 +266,8 @@ PY
 pass "config, poller, plugin, persona and fake site name only tools the server serves"
 
 # No relay, no JSON:API and no token exchange: bakers tools are the only way in. The end-to-end
-# test's seed is the site's, not the bot's.
-if [ -e "$BOT/relay" ] || git grep --untracked -nIE 'pm-relay|/jsonapi|/oauth/token|client_credentials|BAKERS_CLIENT_(ID|SECRET)|create_ticket|answer_question' -- "$BOT" ":!tests/contract" ":!tests/e2e"; then
+# test's seed is the site's, not the bot's; the local web UI's proxy signs people in, not the bot.
+if [ -e "$BOT/relay" ] || git grep --untracked -nIE 'pm-relay|/jsonapi|/oauth/token|client_credentials|BAKERS_CLIENT_(ID|SECRET)|create_ticket|answer_question' -- "$BOT" ":!tests/contract" ":!tests/e2e" ":!webui/compose.yaml"; then
   fail " still has the relay, a JSON:API call, a token exchange or a relay tool"
 fi
 pass "no relay, JSON:API call or token exchange"
@@ -589,34 +593,52 @@ sys.exit(1 if errors else 0)
 PY
 pass "CI runs the end-to-end test on the image it built, before Publish"
 
-# The local Hermes WebUI look (webui/, README.md › Look at it in Hermes WebUI): a pinned image,
-# reachable from this machine only, no nightly job in the shared home, Slack values inert.
+# The local Hermes WebUI look (webui/, README.md › Look at it in Hermes WebUI): pinned images,
+# reachable from this machine only and through bakers.build sign-in alone.
 WEBUI=webui/compose.yaml
 WEBUI_ENV=webui/.env.example
 [ -f "$WEBUI" ] && [ -f "$WEBUI_ENV" ] || fail "$WEBUI or $WEBUI_ENV is missing"
-python3 - "$WEBUI" "$WEBUI_ENV" <<'PY' || fail "the local web UI is not pinned, local-only and inert (see above)"
-import re, sys, yaml
+python3 - "$WEBUI" "$WEBUI_ENV" <<'PY' || fail "the local web UI is not pinned, local-only and behind sign-in (see above)"
+import ipaddress, re, sys, yaml
 
 compose, env_file = sys.argv[1:]
 errors = []
-svc = ((yaml.safe_load(open(compose)) or {}).get("services") or {}).get("webui") or {}
-if not re.fullmatch(r"ghcr\.io/nesquena/hermes-webui(:[\w.-]+)?@sha256:[0-9a-f]{64}", str(svc.get("image", ""))):
-    errors.append(f"the webui image {svc.get('image')!r} is not pinned by digest")
-ports = [str(p) for p in svc.get("ports") or []]
-if not ports or any(not p.startswith("127.0.0.1:") for p in ports):
-    errors.append(f"the webui ports {ports} are not bound to 127.0.0.1 only")
-env = dict(re.findall(r"^([A-Z][A-Z0-9_]*)=(.*)$", open(env_file).read(), re.M))
-if env.get("AUDIT_ENABLED") != "false":
+services = (yaml.safe_load(open(compose)) or {}).get("services") or {}
+webui, proxy = services.get("webui") or {}, services.get("oauth2-proxy") or {}
+for name, svc, repo in (("webui", webui, r"ghcr\.io/nesquena/hermes-webui"), ("oauth2-proxy", proxy, r"quay\.io/oauth2-proxy/oauth2-proxy")):
+    if not re.fullmatch(repo + r"(:[\w.-]+)?@sha256:[0-9a-f]{64}", str(svc.get("image", ""))):
+        errors.append(f"the {name} image {svc.get('image')!r} is not pinned by digest")
+published = {n: [str(p) for p in s.get("ports") or []] for n, s in services.items() if s.get("ports")}
+if set(published) - {"oauth2-proxy", "bakers-front"}:
+    errors.append(f"services other than the proxy and the site's front publish ports: {published}")
+if any(not p.startswith("127.0.0.1:") for ports in published.values() for p in ports):
+    errors.append(f"published ports {published} are not bound to 127.0.0.1 only")
+if "oauth2-proxy" not in published:
+    errors.append("the oauth2-proxy publishes no port")
+env = webui.get("environment") or {}
+if env.get("HERMES_WEBUI_TRUSTED_AUTH_HEADER") != "X-Forwarded-User" or env.get("HERMES_WEBUI_TRUSTED_GROUPS_HEADER") != "X-Forwarded-Groups":
+    errors.append("the webui does not take the user and groups from the proxy's X-Forwarded-User and X-Forwarded-Groups")
+addresses = [n.get("ipv4_address") for n in (proxy.get("networks") or {}).values() if isinstance(n, dict)]
+cidrs = str(env.get("HERMES_WEBUI_TRUSTED_PROXY_CIDRS", ""))
+if not addresses or cidrs != f"{addresses[0]}/32":
+    errors.append(f"HERMES_WEBUI_TRUSTED_PROXY_CIDRS {cidrs!r} is not the proxy's fixed address {addresses} alone")
+command = " ".join(str(a) for a in proxy.get("command") or [])
+upstream = [n.get("ipv4_address") for n in (webui.get("networks") or {}).values() if isinstance(n, dict)]
+for flag in ("--oidc-groups-claim=sub", "--code-challenge-method=S256", f"--upstream=http://{upstream[0] if upstream else 'webui'}:8787"):
+    if flag not in command:
+        errors.append(f"the oauth2-proxy command lacks {flag}")
+example = dict(re.findall(r"^([A-Z][A-Z0-9_]*)=(.*)$", open(env_file).read(), re.M))
+if example.get("AUDIT_ENABLED") != "false":
     errors.append(f"{env_file} does not set AUDIT_ENABLED=false")
 for key in ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"):
-    if not env.get(key, "").endswith("-inert"):
+    if not example.get(key, "").endswith("-inert"):
         errors.append(f"{env_file} does not give {key} an inert value")
 for e in errors:
     print("FAIL:", e, file=sys.stderr)
 sys.exit(1 if errors else 0)
 PY
 git check-ignore -q webui/.env || fail "webui/.env is not ignored"
-pass "the local web UI: pinned by digest, on 127.0.0.1 only, no nightly job, inert Slack, env ignored"
+pass "the local web UI: images pinned by digest, only the sign-in proxy and the site's front published on 127.0.0.1, identity trusted from the proxy alone, the example env sets no nightly job and inert Slack, env ignored"
 
 echo "OK: pm-bot lock-down and configurability contract holds"
 

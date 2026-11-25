@@ -1,19 +1,30 @@
-# A first look at Hermes WebUI on the PM bot's Hermes, on this machine only (README.md › Look at
-# it in Hermes WebUI). Not the bot's deployment: compose.yaml and the image stay as they are.
+# A first look at Hermes WebUI on the PM bot's Hermes, on this machine only, with sign-in through
+# the local bakers.build of the end-to-end test (README.md › Look at it in Hermes WebUI). Not the
+# bot's deployment: compose.yaml and the image stay as they are.
 #
-#   cp webui/.env.example webui/.env   # then fill it in
+#   tests/e2e/run.sh <image> --keep --only status   # the bakers.build site, seeded
+#   webui/register-client.sh                        # once: OAuth client and bot key into webui/.env
 #   docker compose -f webui/compose.yaml up
 #   open http://127.0.0.1:8787
-#   docker compose -f webui/compose.yaml down      # add -v after changing PM_BOT_IMAGE
+#   docker compose -f webui/compose.yaml down      # add -v after changing or pulling PM_BOT_IMAGE
 #
 # Upstream's two-container pattern (its docker-compose.two-container.yml), without a gateway:
-#   prepare  the unchanged bot image runs `entrypoint.sh check` once: it renders config.yaml,
-#            SOUL.md, the shipped skills and the plugin into the volume home (the bot's HERMES_HOME), tests
-#            bakers.build's /mcp, and exits.
 #   agent-src  copies the bot image's /opt/hermes (the bot's Hermes) into a volume, without its
 #            .venv: with one there, Hermes refuses to install its Anthropic SDK into the web UI's
 #            own environment ("not running from the install's dependency environment").
-#   webui    Hermes WebUI runs that Hermes in-process on home, as platform cli.
+#   prepare  the unchanged bot image runs `entrypoint.sh check` once: it renders config.yaml,
+#            SOUL.md, the shipped skills and the plugin into the volume home (the bot's HERMES_HOME),
+#            tests bakers.build's /mcp, and exits.
+#   setup    in the web UI's image: installs the Anthropic and MCP extras into Hermes' dependency
+#            environment in home (without mcp, Hermes silently starts no MCP server, so the chat has
+#            no bakers tools), and renders one profile per user of WEBUI_USERS (profiles.py).
+#   webui    Hermes WebUI runs that Hermes in-process on home, as platform cli. Not published: it
+#            trusts the user and their groups from the proxy's address alone.
+#   oauth2-proxy  the only way in: signs users in at bakers.build (OIDC, PKCE) and passes the user
+#            and, as their one group, their bakers.build user ID, which picks their profile
+#            (HERMES_WEBUI_GROUP_PROFILE_MAP). The site's ID token carries no e-mail address.
+#   bakers-front  the site as the browser reaches it, http://nginx:8788 (needs `127.0.0.1 nginx`
+#            in /etc/hosts): the site answers to the host name nginx alone.
 services:
   agent-src:
     image: ${PM_BOT_IMAGE:-ghcr.io/bakers-build/hermes-bot:main}
@@ -28,9 +39,10 @@ services:
     restart: "no"
     env_file: .env
     environment:
-      # One owner for home in both containers.
+      # One owner for home in all containers.
       HERMES_UID: 1000
       HERMES_GID: 1000
+    networks: [default, bakers]
     volumes:
       - home:/opt/data
       - ${PM_BOT_CLONE:?set PM_BOT_CLONE in webui/.env}:/opt/clone:ro
@@ -44,30 +56,136 @@ services:
     security_opt:
       - no-new-privileges:true
 
-  webui:
-    # 0.52.732
-    image: ghcr.io/nesquena/hermes-webui:0.52.732@sha256:6536ce0611faca518c3c6d07166601e4d1413abac4b7e43db58ec8ef75d0f09d
+  setup:
+    image: &webui-image ghcr.io/nesquena/hermes-webui:0.52.732@sha256:6536ce0611faca518c3c6d07166601e4d1413abac4b7e43db58ec8ef75d0f09d
     depends_on:
       prepare:
         condition: service_completed_successfully
       agent-src:
         condition: service_completed_successfully
-    ports:
-      - "127.0.0.1:8787:8787"
+    user: "1000:1000"
+    # Hermes keys its dependency environment by the agent's path; webui runs it from here.
+    working_dir: /app/hermes-agent-src
+    # Once per home: a second install refuses, as the image's tools are not on its PATH.
+    entrypoint:
+      - sh
+      - -c
+      - |
+        python3 -c 'import sys; from pm.install import enabled_extras; sys.exit(not {"anthropic", "mcp"} <= set(enabled_extras()))' ||
+          python3 -m pm.cli install --extra anthropic --extra mcp || exit
+        python3 /webui/profiles.py
+    restart: "no"
     env_file: .env
     environment:
       HERMES_HOME: /opt/data
+      HOME: /opt/data
+    volumes:
+      - home:/opt/data
+      - agent-src:/app/hermes-agent-src:ro
+      # Its install stamp names the package manager's runtime here.
+      - agent-src:/opt/hermes:ro
+      - ./profiles.py:/webui/profiles.py:ro
+
+  webui:
+    image: *webui-image
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+    env_file: .env
+    environment:
       HERMES_WEBUI_STATE_DIR: /opt/data/webui
       WANTED_UID: 1000
       WANTED_GID: 1000
+      HERMES_WEBUI_TRUSTED_AUTH_HEADER: X-Forwarded-User
+      HERMES_WEBUI_TRUSTED_GROUPS_HEADER: X-Forwarded-Groups
+      HERMES_WEBUI_TRUSTED_PROXY_CIDRS: 10.187.87.2/32
+    networks:
+      default:
+      bakers:
+      auth:
+        ipv4_address: 10.187.87.3
     volumes:
       - home:/opt/data
       - ${PM_BOT_CLONE}:/opt/clone:ro
       - agent-src:/opt/hermes:ro
 
+  oauth2-proxy:
+    # v7.15.6
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.6@sha256:c3415e8660af553f5e18f5d90db050614c02493c0ac6260ac59442f6d9b12048
+    depends_on: [webui]
+    ports:
+      - "127.0.0.1:8787:4180"
+    environment:
+      OAUTH2_PROXY_CLIENT_ID: ${OAUTH2_PROXY_CLIENT_ID:?run webui/register-client.sh}
+      OAUTH2_PROXY_CLIENT_SECRET: ${OAUTH2_PROXY_CLIENT_SECRET:?run webui/register-client.sh}
+      OAUTH2_PROXY_COOKIE_SECRET: ${OAUTH2_PROXY_COOKIE_SECRET:?run webui/register-client.sh}
+    command:
+      - --http-address=0.0.0.0:4180
+      # Its fixed address on auth, the one webui trusts; `webui` would resolve on another network.
+      - --upstream=http://10.187.87.3:8787
+      - --provider=oidc
+      - --provider-display-name=bakers.build
+      # The site serves no OpenID discovery document: its endpoints, keys and issuer by hand.
+      - --skip-oidc-discovery
+      - --oidc-issuer-url=https://nginx/
+      - --login-url=http://nginx:8788/oauth/authorize
+      - --redeem-url=http://nginx/oauth/token
+      - --oidc-jwks-url=http://nginx/oauth/jwks
+      - --profile-url=http://nginx/oauth/userinfo
+      - --scope=openid profile email
+      - --code-challenge-method=S256
+      - --redirect-url=http://127.0.0.1:8787/oauth2/callback
+      # The site releases `sub`, the user ID, and no e-mail address: the ID stands in for both, and
+      # is the user's one group, which HERMES_WEBUI_GROUP_PROFILE_MAP maps to their profile.
+      - --oidc-email-claim=sub
+      - --insecure-oidc-allow-unverified-email=true
+      - --email-domain=*
+      - --oidc-groups-claim=sub
+      - --pass-user-headers=true
+      - --skip-provider-button=true
+      # Plain HTTP on this machine.
+      - --cookie-secure=false
+    networks:
+      bakers:
+      auth:
+        ipv4_address: 10.187.87.2
+
+  bakers-front:
+    image: nginx:1.29.3-alpine@sha256:b3c656d55d7ad751196f21b7fd2e8d4da9cb430e32f646adcf92441b72f82b14
+    ports:
+      - "127.0.0.1:8788:80"
+    networks: [bakers]
+    configs:
+      - source: bakers-front
+        target: /etc/nginx/conf.d/default.conf
+
+configs:
+  bakers-front:
+    content: |
+      server {
+        listen 80;
+        location / {
+          proxy_pass http://nginx;
+          # nginx:8788, so the site's redirects come back here.
+          proxy_set_header Host $$http_host;
+        }
+      }
+
+networks:
+  # The end-to-end test's network, where its site answers as http://nginx.
+  bakers:
+    name: pm-bot-e2e_default
+    external: true
+  # The proxy and the web UI alone, each at a fixed address.
+  auth:
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.187.87.0/29
+
 volumes:
   # A volume, not a bind mount: Hermes unpacks a Python into it, whose terminfo names collide on
   # macOS' case-insensitive file system. `down -v` wipes it with the sessions.
   home:
-  # Filled from PM_BOT_IMAGE on the first up only: `down -v` after changing the image.
+  # Filled from PM_BOT_IMAGE on the first up only: `down -v` after changing or pulling the image.
   agent-src:

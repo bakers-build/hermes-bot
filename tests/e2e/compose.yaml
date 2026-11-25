@@ -4,7 +4,7 @@
 # (tests/contract/pm-bot.sh checks it). Beside it: a bakers.build site from the published release
 # images (adapted from bakers.build's docker/compose/docker-compose.yml), a conductor with a stub
 # agent, a scripted model, a Slack recorder, a Composer repository serving one security
-# advisory, and the GitLab side: a second bot from production's image in GitLab mode beside a
+# advisory, and the GitLab chat mode: a second bot from production's image in GitLab mode beside a
 # GitLab stand-in. Nothing here is a credential.
 #
 # Variables run.sh sets: PM_BOT_IMAGE, PM_BOT_DATA, PM_BOT_CLONE, PM_BOT_UID, PM_BOT_GID (the
@@ -163,7 +163,7 @@ services:
     ports:
       - 127.0.0.1::80
 
-  # The GitLab side's bot: production's image and lock-down in mode run, poller and gateway, with
+  # The GitLab chat mode's bot: production's image and lock-down in mode run, poller and gateway, with
   # its own data directory and env file (PM_BOT_CHAT=gitlab), talking to the stand-in. GitLab's
   # webhooks reach it on its port 8080 inside the stack.
   pm-bot-gitlab:

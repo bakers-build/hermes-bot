@@ -2,7 +2,7 @@
 # The PM bot container's start, as the hermes user after Hermes' own bootstrap
 # (Dockerfile). On every start it:
 #   1. checks the required env (from the data directory's .env) and names what is missing, for the
-#      bot's side (PM_BOT_CHAT: slack, the default, or gitlab);
+#      bot's chat mode (PM_BOT_CHAT: slack, the default, or gitlab);
 #   2. renders config.yaml (on GitLab with config.gitlab.yaml merged over it) and SOUL.md, with the
 #      skill's host context, from the env (render.mjs);
 #   3. puts the shipped skills (bb-create-ticket, its recipes and their method
@@ -35,7 +35,7 @@ case "$mode" in
 esac
 
 REQUIRED=(BAKERS_URL BAKERS_API_KEY PM_BOT_PROJECT PM_BOT_TICKET_WORKFLOW PM_BOT_MODEL PM_BOT_CLONE_DIR)
-# The bot's side, its conversation platform: Slack or GitLab issues (README.md › Sides).
+# The bot's chat mode, its conversation platform: Slack or GitLab issues (README.md › Chat modes).
 export PM_BOT_CHAT="${PM_BOT_CHAT:-slack}"
 case "$PM_BOT_CHAT" in
   slack | gitlab) ;;
@@ -204,11 +204,11 @@ print("plugins: " + ",".join(ours))
 from hermes_cli.config import load_config
 from hermes_cli.tools_config import _get_platform_tools
 import os
-side = os.environ["PM_BOT_CHAT"]
-for platform in ("cron", side):
+chat_mode = os.environ["PM_BOT_CHAT"]
+for platform in ("cron", chat_mode):
     print(f"toolsets {platform}: " + ",".join(sorted(_get_platform_tools(load_config(), platform))))
-if side == "gitlab":
-    # The GitLab side's seams: its platform, the adapter base and the hooks it overrides.
+if chat_mode == "gitlab":
+    # The GitLab chat mode's seams: its platform, the adapter base and the hooks it overrides.
     from gateway.platform_registry import platform_registry
     from gateway.platforms.base import BasePlatformAdapter
     assert platform_registry.is_registered("gitlab"), "bot-channels registered no gitlab platform"

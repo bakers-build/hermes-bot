@@ -50,7 +50,7 @@
 #   - the end-to-end test's overlay (tests/e2e/compose.yaml) changes only pm-bot's command,
 #     networks and depends_on, and its env file has every key of .env.example
 #   - platform_toolsets.cli equals .slack, model.base_url comes from PM_BOT_MODEL_BASE_URL
-#   - the GitLab side (config.gitlab.yaml) runs with Slack's toolsets and no GitLab tool for the
+#   - the GitLab chat mode (config.gitlab.yaml) runs with Slack's toolsets and no GitLab tool for the
 #     model, and its GitLab calls reach only the bot's user, a user's public profile and the
 #     project's issues, notes, award emoji and hooks
 #     (default Anthropic's), and mode agent runs the poller without the gateway
@@ -231,10 +231,10 @@ sys.exit(1 if errors else 0)
 PY
 pass "configuration template keeps the lock-down"
 
-# The GitLab side: the overlay swaps Slack for the gitlab platform with Slack's toolsets and no
+# The GitLab chat mode: the overlay swaps Slack for the gitlab platform with Slack's toolsets and no
 # GitLab tool for the model; the bot's GitLab calls touch only its own user, a user's public
 # profile, the project's issues, notes, award emoji and its own webhook.
-python3 - "$TEMPLATE" "$BOT/config.gitlab.yaml" "$BOT/plugins/bot-channels/gitlab.py" "$BOT/poller/sides/gitlab.mjs" <<'PY' || fail "the GitLab side breaks the lock-down (see above)"
+python3 - "$TEMPLATE" "$BOT/config.gitlab.yaml" "$BOT/plugins/bot-channels/gitlab.py" "$BOT/poller/chat-modes/gitlab.mjs" <<'PY' || fail "the GitLab chat mode breaks the lock-down (see above)"
 import re, sys, yaml
 
 template, overlay_file, plugin_file, poller_file = sys.argv[1:]
@@ -275,7 +275,7 @@ PY
 for key in PM_BOT_CHAT GITLAB_URL GITLAB_PROJECT GITLAB_TOKEN GITLAB_WEBHOOK_URL GITLAB_WEBHOOK_PORT; do
   grep -qE "^$key=" "$BOT/.env.example" || fail ".env.example does not show $key"
 done
-pass "the GitLab side: Slack's toolsets, no GitLab tool for the model, calls only to its user, users, the project's issues, notes, award emoji and hooks"
+pass "the GitLab chat mode: Slack's toolsets, no GitLab tool for the model, calls only to its user, users, the project's issues, notes, award emoji and hooks"
 
 # Every bakers tool the bot names is one the server serves. The stub's TOOLS is the recorded copy of
 # the server's names; a tool the server renamed fails here, not as "Tool not found" on a box.

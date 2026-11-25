@@ -1,4 +1,4 @@
-"""Tests of the plugin's GitLab side at its seam without Hermes, ``gitlab.Side``, with a fake GitLab
+"""Tests of the plugin's GitLab chat mode at its seam without Hermes, ``gitlab.ChatMode``, with a fake GitLab
 API: python3 -m unittest discover -s plugins/bot-channels"""
 
 import importlib.util
@@ -74,10 +74,10 @@ class SideTest(unittest.TestCase):
             self.addCleanup(patcher.stop)
         self.api = Api()
         self.handed = []
-        self.side = self.start()
+        self.chat_mode = self.start()
 
     def start(self, code="en"):
-        return gitlab.Side(self.api, self.handed.append, {"code": code}, "https://bot.example/webhooks/gitlab")
+        return gitlab.ChatMode(self.api, self.handed.append, {"code": code}, "https://bot.example/webhooks/gitlab")
 
     def conversations(self):
         return json.loads(pathlib.Path(self.dir, "conversations.json").read_text())
@@ -88,11 +88,11 @@ class SideTest(unittest.TestCase):
 
 class Intake(SideTest):
     def test_a_new_issue_is_acknowledged_recorded_and_handed_on_in_its_own_session(self):
-        self.assertEqual(self.side.handle(issue_event()), "request")
+        self.assertEqual(self.chat_mode.handle(issue_event()), "request")
         self.assertEqual(self.api.of("note"), [(7, "@alice Thanks, I've got your request and I'm looking into it. I'll answer here shortly.")])
         record = self.conversations()["7"]
-        self.assertEqual({k: record[k] for k in ("side", "requester", "requester_username", "requester_email")},
-                         {"side": "gitlab", "requester": 42, "requester_username": "alice", "requester_email": "alice@example.test"})
+        self.assertEqual({k: record[k] for k in ("chat_mode", "requester", "requester_username", "requester_email")},
+                         {"chat_mode": "gitlab", "requester": 42, "requester_username": "alice", "requester_email": "alice@example.test"})
         [message] = self.handed
         self.assertEqual((message["iid"], message["text"], message["user_name"]), ("7", "Login page\n\nMembers sign in.", "Alice | GitLab user @alice"))
 
@@ -101,41 +101,41 @@ class Intake(SideTest):
         self.assertTrue(self.api.of("note")[0][1].startswith("@alice Danke, ich habe deine Anfrage erhalten"))
 
     def test_the_trusted_line_names_issue_link_ticket_requester_address_and_language(self):
-        self.side.handle(issue_event())
-        self.assertEqual(self.side.prompt("7"), "This is the GitLab issue 7. Its conversation link is https://gitlab.example/acme/shop/-/issues/7. "
+        self.chat_mode.handle(issue_event())
+        self.assertEqual(self.chat_mode.prompt("7"), "This is the GitLab issue 7. Its conversation link is https://gitlab.example/acme/shop/-/issues/7. "
                          "Its ticket: none yet. Its requester: GitLab user @alice. Its requester's e-mail address: alice@example.test. "
                          "Answer in the language with ISO 639-1 code `en`.")
         self.poller({"7": {"ticket": "ACME-3"}})
-        self.assertIn("Its ticket: ACME-3.", self.side.prompt("7"))
+        self.assertIn("Its ticket: ACME-3.", self.chat_mode.prompt("7"))
 
     def test_without_a_public_address_the_line_says_none(self):
         self.api.email = None
         with self.assertLogs("pm_bot.bot_channels", "WARNING"):
-            self.side.handle(issue_event())
+            self.chat_mode.handle(issue_event())
         self.assertNotIn("requester_email", self.conversations()["7"])
-        self.assertIn("e-mail address: none.", self.side.prompt("7"))
+        self.assertIn("e-mail address: none.", self.chat_mode.prompt("7"))
 
     def test_a_failed_acknowledgement_still_hands_the_request_on(self):
         self.api.fail.add("note")
         with self.assertLogs("pm_bot.bot_channels", "ERROR"):
-            self.side.handle(issue_event())
+            self.chat_mode.handle(issue_event())
         self.assertEqual(len(self.handed), 1)
 
     def test_the_same_issue_delivered_twice_is_handled_once(self):
-        self.side.handle(issue_event())
-        self.assertEqual(self.side.handle(issue_event()), "already handled")
+        self.chat_mode.handle(issue_event())
+        self.assertEqual(self.chat_mode.handle(issue_event()), "already handled")
         self.assertEqual(len(self.handed), 1)
 
 
 class Conversation(SideTest):
     def setUp(self):
         super().setUp()
-        self.side.handle(issue_event())
+        self.chat_mode.handle(issue_event())
         self.handed.clear()
 
     def test_a_participants_note_is_handed_on_once(self):
-        self.assertEqual(self.side.handle(note_event()), "message")
-        self.assertEqual(self.side.handle(note_event()), "already handled")
+        self.assertEqual(self.chat_mode.handle(note_event()), "message")
+        self.assertEqual(self.chat_mode.handle(note_event()), "already handled")
         [message] = self.handed
         self.assertEqual((message["iid"], message["text"], message["user_name"], message["note_id"]), ("7", "Only with the e-mail address.", "Bob | GitLab user @bob", 11))
 
@@ -148,37 +148,37 @@ class Conversation(SideTest):
             "other project": note_event(project="acme/other"),
         }
         for expected, event in cases.items():
-            self.assertEqual(self.side.handle(event), expected)
-        self.assertEqual(self.side.handle(issue_event(iid=9, author=BOT)), "own issue")
-        self.assertEqual(self.side.handle(issue_event(iid=10, action="update")), "not a new issue")
+            self.assertEqual(self.chat_mode.handle(event), expected)
+        self.assertEqual(self.chat_mode.handle(issue_event(iid=9, author=BOT)), "own issue")
+        self.assertEqual(self.chat_mode.handle(issue_event(iid=10, action="update")), "not a new issue")
         self.assertEqual(self.handed, [])
 
     def test_a_note_on_the_issue_of_a_closed_ticket_is_not_handed_on(self):
         self.poller({"7": {"ticket": "ACME-3", "archived": True}})
-        self.assertEqual(self.side.handle(note_event()), "not a conversation")
+        self.assertEqual(self.chat_mode.handle(note_event()), "not a conversation")
         self.assertEqual(self.handed, [])
 
 
 class Webhook(SideTest):
     def test_only_the_hooks_secret_counts(self):
-        self.assertTrue(self.side.verify({"X-Gitlab-Token": self.side.secret}))
-        self.assertFalse(self.side.verify({"X-Gitlab-Token": "guess"}))
-        self.assertFalse(self.side.verify({}))
+        self.assertTrue(self.chat_mode.verify({"X-Gitlab-Token": self.chat_mode.secret}))
+        self.assertFalse(self.chat_mode.verify({"X-Gitlab-Token": "guess"}))
+        self.assertFalse(self.chat_mode.verify({}))
 
     def test_the_secret_is_made_once_and_readable_only_by_the_bot(self):
-        self.assertEqual(self.start().secret, self.side.secret)
+        self.assertEqual(self.start().secret, self.chat_mode.secret)
         self.assertEqual(stat.S_IMODE(os.stat(gitlab.WEBHOOK_FILE).st_mode), 0o600)
 
     def test_the_hook_is_created_once_then_updated_and_other_hooks_stay(self):
         self.api.hooks_list = [{"id": 1, "url": "https://ci.example/hook"}]
         with self.assertLogs("pm_bot.bot_channels", "WARNING"):
-            self.side.register_hook()
+            self.chat_mode.register_hook()
         [(settings,)] = self.api.of("add_hook")
-        self.assertEqual(settings, {"url": "https://bot.example/webhooks/gitlab", "token": self.side.secret, "issues_events": True,
+        self.assertEqual(settings, {"url": "https://bot.example/webhooks/gitlab", "token": self.chat_mode.secret, "issues_events": True,
                                     "note_events": True, "push_events": False, "enable_ssl_verification": True})
         self.api.hooks_list.append({"id": 2, "url": "https://bot.example/webhooks/gitlab"})
         with self.assertLogs("pm_bot.bot_channels", "WARNING"):
-            self.side.register_hook()
+            self.chat_mode.register_hook()
         self.assertEqual(len(self.api.of("add_hook")), 1)
         self.assertEqual([c[0] for c in self.api.of("edit_hook")], [2])
         self.assertEqual(self.api.of("test_hook"), [], "an executable hook gets no test delivery")
@@ -186,7 +186,7 @@ class Webhook(SideTest):
     def test_a_disabled_hook_is_updated_and_reenabled_by_a_test_delivery(self):
         self.api.hooks_list = [{"id": 2, "url": "https://bot.example/webhooks/gitlab", "alert_status": "disabled"}]
         with self.assertLogs("pm_bot.bot_channels", "WARNING"):
-            self.side.register_hook()
+            self.chat_mode.register_hook()
         self.assertEqual([c[0] for c in self.api.of("edit_hook")], [2])
         self.assertEqual(self.api.of("test_hook"), [(2,)])
 
@@ -194,28 +194,28 @@ class Webhook(SideTest):
         self.api.hooks_list = [{"id": 2, "url": "https://bot.example/webhooks/gitlab", "alert_status": "temporarily_disabled"}]
         self.api.fail.add("test_hook")
         with self.assertLogs("pm_bot.bot_channels", "WARNING") as logs:
-            self.side.register_hook()
+            self.chat_mode.register_hook()
         self.assertTrue(any("gitlab: webhook https://bot.example/webhooks/gitlab still disabled" in line for line in logs.output), logs.output)
 
     def test_a_failed_registration_is_logged_and_the_bot_keeps_running(self):
         self.api.fail.add("hooks")
         with self.assertLogs("pm_bot.bot_channels", "ERROR") as logs:
-            self.side.register_hook()
+            self.chat_mode.register_hook()
         self.assertIn("gitlab: webhook https://bot.example/webhooks/gitlab not registered", logs.output[0])
 
 
 class CatchUp(SideTest):
     def test_the_first_start_handles_none_of_the_existing_issues(self):
         self.api.issues = [{"iid": 3, "title": "Old", "author": {"id": 42, "username": "alice"}, "state": "opened"}]
-        self.side.catch_up()
+        self.chat_mode.catch_up()
         self.assertEqual(self.handed, [])
         self.api.issues.append({"iid": 4, "title": "New", "author": {"id": 42, "username": "alice"}, "state": "opened"})
         self.start().catch_up()
         self.assertEqual([m["text"] for m in self.handed], ["New"])
 
     def test_what_came_while_the_bot_was_down_is_handled_once_after_a_restart(self):
-        self.side.catch_up()
-        self.side.handle(issue_event())
+        self.chat_mode.catch_up()
+        self.chat_mode.handle(issue_event())
         self.handed.clear()
         self.api.issues = [{"iid": 7, "title": "Login page", "author": {"id": 42, "username": "alice"}, "state": "opened"},
                            {"iid": 8, "title": "Logout", "author": {"id": 44, "username": "carol"}, "author_id": 44, "state": "opened"}]
@@ -228,7 +228,7 @@ class CatchUp(SideTest):
 
 
 class Register(unittest.TestCase):
-    """PM_BOT_CHAT picks the bot's side when Hermes loads the plugin."""
+    """PM_BOT_CHAT picks the bot's chat mode when Hermes loads the plugin."""
 
     def registered(self, chat):
         calls = []

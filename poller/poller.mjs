@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // The PM bot's poller. Every interval it reads the project's tickets from
-// bakers.build through its tools and, for each ticket with a conversation on the bot's side
-// (PM_BOT_CHAT, poller/sides: a Slack channel or thread, or a GitLab issue; a sub-ticket without
+// bakers.build through its tools and, for each ticket with a conversation in the bot's chat mode
+// (PM_BOT_CHAT, poller/chat-modes: a Slack channel or thread, or a GitLab issue; a sub-ticket without
 // one shares its ancestor's): posts each state change there once and relays its open question or technical
 // problem once. Between states it posts, once each, when a run starts, when a run ends without
 // moving the ticket on, a new summary's outcome, the links in its Manual review on a host under
-// PREVIEW_ZONES, a new preview link, and a heartbeat while a run works and the conversation has been quiet for PM_BOT_HEARTBEAT_INTERVAL. For the conversations the bot opened it owes the side's steps: on
+// PREVIEW_ZONES, a new preview link, and a heartbeat while a run works and the conversation has been quiet for PM_BOT_HEARTBEAT_INTERVAL. For the conversations the bot opened it owes the chat mode's steps: on
 // the ticket's arrival, closing after the final post, reopening with the ticket, and closing one
 // that stayed silent for a week without a ticket. It posts in the bot's
 // language, which the bot-channels plugin writes to bot-language.json. No LLM, no dependencies.
@@ -27,29 +27,45 @@ import { openNote, QUESTION_LABEL, relay, TECHNICAL_PROBLEM_LABEL } from './ques
 import { conversations } from './tickets.mjs';
 import { withTicket } from './ticket-footer.mjs';
 import { forget, previewZones, updates } from './updates.mjs';
-import { createGitLab, createGitLabSide } from './sides/gitlab.mjs';
-import { createSlack, createSlackSide, relaySender } from './sides/slack.mjs';
+import { createGitLab, createGitLabChatMode } from './chat-modes/gitlab.mjs';
+import { createSlack, createSlackChatMode, relaySender } from './chat-modes/slack.mjs';
 
 // shortcut: a ticket above 1000 comments loses the oldest, read through bakers_comment_read then.
 const ALL_COMMENTS = 1000;
 
-// The poller's steps per channelSteps kind, each a method of the side.
+/**
+ * The bot's chat mode (PM_BOT_CHAT): where requesters talk to it. One module per mode in
+ * poller/chat-modes/, each factory returning exactly these members (chat-modes/chat-mode.test.mjs).
+ * A step gets `ctx` = {state, messages, client, now, writeState}, the step from channelSteps and the
+ * plugin's conversations; it records what it did in `ctx.state.channels`, so a pass resumes at the step not yet done.
+ *
+ * @typedef {object} ChatMode
+ * @property {string} name the PM_BOT_CHAT value
+ * @property {(links: {uri: string, title?: string}[]) => {channel: string, thread_ts?: string, url: string} | null} conversationOf a ticket's conversation from its links, or null
+ * @property {(message: {channel: string, thread_ts?: string, text: string}) => Promise<unknown>} post a post into a conversation
+ * @property {(message: {channel: string, thread_ts?: string, text: string}) => Promise<unknown>} relay the post of a question or technical problem
+ * @property {(ctx: object, step: object, bot: object) => Promise<void>} onTicket a conversation the bot opened, now linked by its ticket
+ * @property {(ctx: object, step: object, bot: object) => Promise<void>} close the ticket is done or cancelled, its final state posted
+ * @property {(ctx: object, step: object, bot: object) => Promise<void>} reopen the ticket is open again after close
+ * @property {(ctx: object, step: object, bot: object) => Promise<void>} expireSilent a week silent without a ticket
+ */
+
+// The poller's steps per channelSteps kind, each a ChatMode member.
 const STEP = { rename: 'onTicket', archive: 'close', reopen: 'reopen', abandon: 'expireSilent' };
 
 /**
- * @param {{client: ReturnType<typeof createBakersClient>, side: ReturnType<typeof createSlackSide>,
+ * @param {{client: ReturnType<typeof createBakersClient>, chatMode: ChatMode,
  *   stateFile: string, conversationsFile: string, legacyFile?: string, languageFile: string, now?: () => number,
  *   project: string, messages: {de: any, en: any}, heartbeat?: number, previewZones?: string[], log?: {log: Function, error: Function}}} options
  *   heartbeat: the quiet time in ms after which a working ticket's conversation gets a heartbeat
- *   side: the conversation platform (poller/sides): the conversation of a ticket, its posts, the relay
- *     of questions and technical problems, and the steps owed to the conversations the bot opened
+ *   chatMode: the bot's chat mode (ChatMode above)
  *   conversationsFile: the conversations the bot's plugin opened (conversations.json), which only the plugin writes;
  *     legacyFile: bot-channels.json, read while the plugin has not moved it to conversationsFile yet
  *   languageFile: the bot's language as the plugin read it, {"language": "<ISO 639-1 code>"}; only the plugin writes it
  *   messages: the fixed texts per language
  *   previewZones: the DNS zones whose hosts' links in a summary's Manual review are posted; none posts none
  */
-export function createPoller({ client, side, stateFile, conversationsFile, legacyFile, languageFile, now = Date.now, project, messages: texts, heartbeat = heartbeatInterval(), previewZones: zones = [], log = console }) {
+export function createPoller({ client, chatMode, stateFile, conversationsFile, legacyFile, languageFile, now = Date.now, project, messages: texts, heartbeat = heartbeatInterval(), previewZones: zones = [], log = console }) {
   const stamp = () => new Date().toISOString();
   // The texts of the current pass: the plugin's language, German without texts for it.
   let messages = texts.de;
@@ -68,7 +84,7 @@ export function createPoller({ client, side, stateFile, conversationsFile, legac
           url: t.url,
           origin: t.origin,
           state: t.state,
-          conversation: side.conversationOf(t.links),
+          conversation: chatMode.conversationOf(t.links),
           links: t.links ?? [],
           labels: t.labels ?? [],
           frozen: Boolean(t.frozen),
@@ -147,7 +163,7 @@ export function createPoller({ client, side, stateFile, conversationsFile, legac
     for (const t of all) if (archived(state, t) && state.tickets?.[t.identifier] !== undefined) next[t.identifier] = state.tickets[t.identifier];
     for (const p of posts) {
       try {
-        await side.post(p);
+        await chatMode.post(p);
         stampPost(state, p);
         // The ticket's own channel may be archived only after this post.
         const record = !p.thread_ts && state.channels[p.channel];
@@ -182,7 +198,7 @@ export function createPoller({ client, side, stateFile, conversationsFile, legac
     for (const post of selected.posts) {
       try {
         const ticket = current.find((t) => t.identifier === post.identifier);
-        await side.relay(post.kind === 'technical_problem' ? { ...post, text: withTicket(post.text, ticket, messages) } : post);
+        await chatMode.relay(post.kind === 'technical_problem' ? { ...post, text: withTicket(post.text, ticket, messages) } : post);
         state.relayed.push(post.comment);
         stampPost(state, post);
         log.log(`${stamp()} relayed ${post.kind} ${post.comment} of ${post.identifier}`);
@@ -220,7 +236,7 @@ export function createPoller({ client, side, stateFile, conversationsFile, legac
         continue;
       }
       try {
-        await side.post(p);
+        await chatMode.post(p);
         stampPost(state, p);
         log.log(`${stamp()} posted an update of ${p.identifier}`);
       } catch (error) {
@@ -236,7 +252,7 @@ export function createPoller({ client, side, stateFile, conversationsFile, legac
     const bot = await readJson(conversationsFile, null) ?? (legacyFile ? await readJson(legacyFile, {}) : {});
     for (const step of channelSteps(state, current, bot, now()).filter((s) => kinds.includes(s.kind))) {
       try {
-        await side[STEP[step.kind]]({ state, messages, client, now, writeState }, step, bot);
+        await chatMode[STEP[step.kind]]({ state, messages, client, now, writeState }, step, bot);
         await writeState(state);
         log.log(`${stamp()} ${step.kind} ${step.channel}${step.ticket ? ` of ${step.ticket.identifier}` : ''}`);
       } catch (error) {
@@ -277,20 +293,20 @@ if (isMain) {
     if (!value) throw new Error(`${name} is not set`);
     return value;
   };
-  // One side per bot (PM_BOT_CHAT, default slack).
+  // One chat mode per bot (PM_BOT_CHAT, default slack).
   const chat = process.env.PM_BOT_CHAT || 'slack';
-  let side;
+  let chatMode;
   if (chat === 'slack') {
     const slack = createSlack({ url: process.env.SLACK_API_URL || undefined, token: env('SLACK_BOT_TOKEN') });
-    side = createSlackSide({ slack, send: relaySender({ slackApiUrl: process.env.SLACK_API_URL, slack }), workspaceUrl: env('SLACK_WORKSPACE_URL') });
+    chatMode = createSlackChatMode({ slack, send: relaySender({ slackApiUrl: process.env.SLACK_API_URL, slack }), workspaceUrl: env('SLACK_WORKSPACE_URL') });
   } else if (chat === 'gitlab') {
-    side = createGitLabSide({ gitlab: createGitLab({ url: env('GITLAB_URL'), project: env('GITLAB_PROJECT'), token: env('GITLAB_TOKEN') }) });
+    chatMode = createGitLabChatMode({ gitlab: createGitLab({ url: env('GITLAB_URL'), project: env('GITLAB_PROJECT'), token: env('GITLAB_TOKEN') }) });
   } else {
     throw new Error(`PM_BOT_CHAT must be slack or gitlab, not ${chat}`);
   }
   const poller = createPoller({
     client: createBakersClient({ url: env('BAKERS_URL'), apiKey: env('BAKERS_API_KEY') }),
-    side,
+    chatMode,
     stateFile: join(env('HERMES_HOME'), 'poller-state.json'),
     conversationsFile: join(env('HERMES_HOME'), 'conversations.json'),
     legacyFile: join(env('HERMES_HOME'), 'bot-channels.json'),

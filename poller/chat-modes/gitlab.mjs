@@ -1,4 +1,4 @@
-// The poller's GitLab side (README.md › The GitLab side): a ticket's conversation is the issue of
+// The poller's GitLab chat mode (README.md › The GitLab chat mode): a ticket's conversation is the issue of
 // GITLAB_PROJECT it links, and every post is a note on it. On the ticket's arrival the issue gets a
 // note naming it; after the final post the issue is closed, and reopened with the ticket; an issue
 // the bot answered that stayed silent for a week without a ticket gets a last note and is closed.
@@ -54,11 +54,12 @@ export function createGitLab({ url, project, token }) {
 }
 
 /**
- * The GitLab side of the poller's side contract (poller/sides/slack.mjs has the Slack one).
+ * The GitLab chat mode.
  *
  * @param {{gitlab: ReturnType<typeof createGitLab>}} options
+ * @returns {import('../poller.mjs').ChatMode}
  */
-export function createGitLabSide({ gitlab }) {
+export function createGitLabChatMode({ gitlab }) {
   const post = ({ channel, text }) => gitlab.note(channel, markdown(text));
   return {
     name: 'gitlab',

@@ -156,7 +156,7 @@ export function channel(id, { requester = 'U0E2EREQ', email = seed.requester_ema
   try {
     bot = JSON.parse(readFileSync(file, 'utf8'));
   } catch {}
-  bot[id] = { side: 'slack', name: `req-${id.toLowerCase()}`, requester, created: new Date().toISOString(), requester_email: email };
+  bot[id] = { chat_mode: 'slack', name: `req-${id.toLowerCase()}`, requester, created: new Date().toISOString(), requester_email: email };
   writeFileSync(`${file}.tmp`, JSON.stringify(bot, null, 2));
   renameSync(`${file}.tmp`, file);
   return { id, link: `${WORKSPACE_URL}/archives/${id}` };

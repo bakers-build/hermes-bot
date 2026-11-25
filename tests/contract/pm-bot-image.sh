@@ -24,7 +24,7 @@
 #     or names a job store it cannot read instead of logging the audit off
 #   - Hermes resolves the cron job's toolsets to terminal, skills, bakers and bot-channels-cron and
 #     Slack's to the bot's five, without the terminal or the channel tool
-#   - on the GitLab side (PM_BOT_CHAT=gitlab) the config holds no Slack, the plugin registers the
+#   - in the GitLab chat mode (PM_BOT_CHAT=gitlab) the config holds no Slack, the plugin registers the
 #     gitlab platform, the issue gets the bot's five toolsets, cron has no channel tool, and
 #     GitLab's missing keys are named
 #   - the bot-channels plugin is installed and loaded, and the Hermes internals it relies on
@@ -282,21 +282,21 @@ pass "SOUL.md is rendered from the image's template: no hand edit, placeholder o
 kept" ] || fail "a learned skill or a session was lost"
 pass "learned skills and sessions kept"
 
-# The GitLab side: the overlay replaces Slack, the plugin registers the gitlab platform, the issue
+# The GitLab chat mode: the overlay replaces Slack, the plugin registers the gitlab platform, the issue
 # gets Slack's toolsets and cron loses the channel tool; GitLab's keys are required and named.
 gitlab=(-e PM_BOT_CHAT=gitlab -e GITLAB_URL=https://gitlab.example.com -e GITLAB_PROJECT=group/project -e GITLAB_TOKEN=glpat-fixture
   -e GITLAB_WEBHOOK_URL=https://pm-bot.example.com/webhooks/gitlab -e SLACK_BOT_TOKEN= -e SLACK_APP_TOKEN=)
-out="$(start --rm "${gitlab[@]}" "$IMAGE" check 2>&1)" || { echo "$out" >&2; fail "check mode failed on the GitLab side"; }
+out="$(start --rm "${gitlab[@]}" "$IMAGE" check 2>&1)" || { echo "$out" >&2; fail "check mode failed in the GitLab chat mode"; }
 grep -qx 'platforms: gitlab' <<<"$out" || { echo "$out" >&2; fail "the plugin registers no gitlab platform"; }
 grep -qx 'toolsets gitlab: bakers,clone-reader,memory,session_search,skills' <<<"$out" || { echo "$out" >&2; fail "the issue's toolsets are not exactly the bot's five"; }
-grep -qx 'toolsets cron: bakers,skills,terminal' <<<"$out" || { echo "$out" >&2; fail "cron keeps the channel tool on the GitLab side"; }
-grep -qx 'plugin seams: ok' <<<"$out" || { echo "$out" >&2; fail "a Hermes internal the GitLab side relies on is gone"; }
+grep -qx 'toolsets cron: bakers,skills,terminal' <<<"$out" || { echo "$out" >&2; fail "cron keeps the channel tool in the GitLab chat mode"; }
+grep -qx 'plugin seams: ok' <<<"$out" || { echo "$out" >&2; fail "a Hermes internal the GitLab chat mode relies on is gone"; }
 config="$(in_data 'cat /d/config.yaml')"
-! grep -qE '^slack:|allowed_channels' <<<"$config" || fail "config.yaml keeps Slack's block on the GitLab side"
+! grep -qE '^slack:|allowed_channels' <<<"$config" || fail "config.yaml keeps Slack's block in the GitLab chat mode"
 grep -qE '^    enabled: true' <<<"$config" || fail "config.yaml does not enable the gitlab platform"
-out="$(start --rm -e PM_BOT_CHAT=gitlab "$IMAGE" check 2>&1)" && fail "check passed on the GitLab side without GitLab's keys"
+out="$(start --rm -e PM_BOT_CHAT=gitlab "$IMAGE" check 2>&1)" && fail "check passed in the GitLab chat mode without GitLab's keys"
 grep -q 'missing: GITLAB_URL GITLAB_PROJECT GITLAB_TOKEN GITLAB_WEBHOOK_URL' <<<"$out" || { echo "$out" >&2; fail "GitLab's missing keys are not named"; }
-pass "the GitLab side: gitlab platform, Slack's toolsets, no channel tool for cron, its keys required"
+pass "the GitLab chat mode: gitlab platform, Slack's toolsets, no channel tool for cron, its keys required"
 
 out="$(start --rm -e PM_BOT_PROJECT= -e SLACK_ADMIN_USERS= "$IMAGE" check 2>&1)" && fail "check passed without PM_BOT_PROJECT"
 grep -q 'missing: SLACK_ADMIN_USERS PM_BOT_PROJECT' <<<"$out" || { echo "$out" >&2; fail "the missing keys are not named"; }

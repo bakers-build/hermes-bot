@@ -1,5 +1,5 @@
-"""The PM bot's conversations, as a Hermes plugin (README.md › How it works), on one side per bot
-(PM_BOT_CHAT): Slack (slack.py, below) or GitLab issues (gitlab.py, its own docstring). Both sides
+"""The PM bot's conversations, as a Hermes plugin (README.md › How it works), in one chat mode per bot
+(PM_BOT_CHAT): Slack (slack.py, below) or GitLab issues (gitlab.py, its own docstring). Both modes
 share the core (channels.py: state files, trusted lines, texts; language.py) and the recovery.
 
 On Slack:
@@ -44,7 +44,7 @@ def register(ctx):
         migrate(DATA)
     except Exception as exc:
         logger.error("bot-channels: bot-channels.json not moved to conversations.json: %s", exc)
-    # One side per bot (PM_BOT_CHAT, default slack).
+    # One chat mode per bot (PM_BOT_CHAT, default slack).
     if (os.environ.get("PM_BOT_CHAT") or "slack") == "gitlab":
         from . import gitlab
         gitlab.register(ctx)

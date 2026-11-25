@@ -1,8 +1,8 @@
-"""The bot-channels plugin's GitLab side (README.md › The GitLab side): a Hermes platform adapter,
+"""The bot-channels plugin's GitLab chat mode (README.md › The GitLab chat mode): a Hermes platform adapter,
 ``gitlab``, for the issues of GITLAB_PROJECT.
 
 - Intake: a new open issue not written by the bot is a request. The bot records it as a
-  conversation (conversations.json, side ``gitlab``), acknowledges it in a note and hands its title
+  conversation (conversations.json, chat mode ``gitlab``), acknowledges it in a note and hands its title
   and description on to Hermes, in one session per issue (chat ID = the issue's IID).
 - Conversation: a note on a conversation issue, not the bot's own, not a system note, is handed on
   while the issue's ticket is open; the poller records a closed one as archived.
@@ -111,8 +111,8 @@ def _settings(env):
     }
 
 
-class Side:
-    """The GitLab side without Hermes: ``hand_on(message)`` gives a message to Hermes as
+class ChatMode:
+    """The GitLab chat mode without Hermes: ``hand_on(message)`` gives a message to Hermes as
     ``{iid, text, message_id, user_id, user_name, kind, note_id}``. Its API calls block; the
     adapter runs them in a thread."""
 
@@ -148,7 +148,7 @@ class Side:
     def conversation(self, iid):
         """The issue's record when the bot answers it: its conversation, while its ticket is open."""
         record = read_json(CONVERSATIONS_FILE).get(str(iid))
-        if not record or record.get("side") != "gitlab":
+        if not record or record.get("chat_mode") != "gitlab":
             return None
         if ((read_json(POLLER_FILE).get("channels") or {}).get(str(iid)) or {}).get("archived"):
             return None
@@ -209,7 +209,7 @@ class Side:
             email = None
         if not email:
             logger.warning("gitlab: GitLab shows no public e-mail address for user %s", author)
-        self._update(iid, side="gitlab", requester=author, requester_username=username, requester_name=name,
+        self._update(iid, chat_mode="gitlab", requester=author, requester_username=username, requester_name=name,
                      created=issue.get("created_at") or "", **({"requester_email": email} if email else {}))
         self._mark_issue(iid)
         try:
@@ -281,7 +281,7 @@ class Side:
                 if int(issue["iid"]) > state["last_issue"]:
                     self.issue(issue, issue.get("author") or {})
             for iid, record in read_json(CONVERSATIONS_FILE).items():
-                if record.get("side") != "gitlab" or not self.conversation(iid):
+                if record.get("chat_mode") != "gitlab" or not self.conversation(iid):
                     continue
                 for note in self.api.notes(iid):
                     if note.get("id", 0) > (self.conversation(iid).get("last_note") or 0):
@@ -310,14 +310,14 @@ def adapter_class():
             self.settings = _settings(os.environ)
             self.api = Api(self.settings["url"], self.settings["project"], self.settings["token"])
             self.lang = {"code": DEFAULT_LANGUAGE}
-            self.side = None
+            self.chat_mode = None
             self._runner = None
             self._eyes = {}
 
         async def connect(self, *, is_reconnect=False):
             language.start(self.lang, LANGUAGE_FILE)
             loop = asyncio.get_running_loop()
-            self.side = Side(self.api, lambda message: loop.call_soon_threadsafe(self._hand_on, message), self.lang, self.settings["webhook_url"])
+            self.chat_mode = ChatMode(self.api, lambda message: loop.call_soon_threadsafe(self._hand_on, message), self.lang, self.settings["webhook_url"])
             app = web.Application(client_max_size=1_048_576)
             app.router.add_post(WEBHOOK_PATH, self._webhook)
             self._runner = web.AppRunner(app)
@@ -325,8 +325,8 @@ def adapter_class():
             await web.TCPSite(self._runner, "0.0.0.0", self.settings["port"]).start()
             self._running = True
             logger.warning("gitlab: serving issues of %s on port %s", self.settings["project"], self.settings["port"])
-            await asyncio.to_thread(self.side.register_hook)
-            await asyncio.to_thread(self.side.catch_up)
+            await asyncio.to_thread(self.chat_mode.register_hook)
+            await asyncio.to_thread(self.chat_mode.catch_up)
             return True
 
         async def disconnect(self):
@@ -336,7 +336,7 @@ def adapter_class():
             self._running = False
 
         async def _webhook(self, request):
-            if not self.side.verify(request.headers):
+            if not self.chat_mode.verify(request.headers):
                 logger.warning("gitlab: a webhook delivery without the hook's secret was refused")
                 return web.Response(status=401)
             try:
@@ -350,14 +350,14 @@ def adapter_class():
 
         async def _handle(self, body):
             try:
-                logger.info("gitlab: webhook: %s", await asyncio.to_thread(self.side.handle, body))
+                logger.info("gitlab: webhook: %s", await asyncio.to_thread(self.chat_mode.handle, body))
             except Exception as exc:
                 logger.error("gitlab: webhook: %s", exc)
 
         def _hand_on(self, message):
             iid = message["iid"]
             prompts = self.config.extra.setdefault("channel_prompts", {})
-            prompts[iid] = self.side.prompt(iid)
+            prompts[iid] = self.chat_mode.prompt(iid)
             source = self.build_source(chat_id=iid, chat_name=f"#{iid}", chat_type="group", user_id=message["user_id"],
                                        user_name=message["user_name"], message_id=message["message_id"])
             event = MessageEvent(text=message["text"], message_type=MessageType.TEXT, source=source, raw_message=message,

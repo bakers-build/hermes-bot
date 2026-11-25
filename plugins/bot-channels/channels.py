@@ -1,4 +1,4 @@
-"""Core of the bot-channels plugin, shared by its sides: the state files and their read, write and
+"""Core of the bot-channels plugin, shared by its chat modes: the state files and their read, write and
 one-time move, request-channel names, the set of open conversations, the trusted lines and the
 plugin's texts. No Hermes import.
 
@@ -16,7 +16,7 @@ import unicodedata
 logger = logging.getLogger("pm_bot.bot_channels")
 
 # The state files: the plugin writes conversations.json (every conversation it opened, with its
-# side) and bot-language.json; the poller writes poller-state.json. Each reads the other's.
+# chat mode) and bot-language.json; the poller writes poller-state.json. Each reads the other's.
 DATA = os.environ.get("HERMES_HOME") or "/opt/data"
 CONVERSATIONS_FILE = os.path.join(DATA, "conversations.json")
 LANGUAGE_FILE = os.path.join(DATA, "bot-language.json")
@@ -111,14 +111,14 @@ def write_json(path, value):
 
 
 def migrate(data):
-    """Moves the Slack channels of ``bot-channels.json``, which the plugin wrote before sides, into
+    """Moves the Slack channels of ``bot-channels.json``, which the plugin wrote before chat modes, into
     ``conversations.json`` as Slack entries, once: only while conversations.json does not exist.
     The old file stays as it was."""
     target, legacy = os.path.join(data, "conversations.json"), os.path.join(data, "bot-channels.json")
     if os.path.exists(target) or not os.path.exists(legacy):
         return
     channels = read_json(legacy, strict=True)
-    write_json(target, {key: {"side": "slack", **(value or {})} for key, value in channels.items()})
+    write_json(target, {key: {"chat_mode": "slack", **(value or {})} for key, value in channels.items()})
     logger.warning("bot-channels: moved %d channels from bot-channels.json to conversations.json", len(channels))
 
 

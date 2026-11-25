@@ -88,14 +88,14 @@ class ReadJson(unittest.TestCase):
 
 
 class Migrate(unittest.TestCase):
-    """The plugin's channels moved from bot-channels.json to conversations.json, with their side."""
+    """The plugin's channels moved from bot-channels.json to conversations.json, with their chat mode."""
 
     def test_the_old_channels_become_slack_conversations_once(self):
         with tempfile.TemporaryDirectory() as d:
             pathlib.Path(d, "bot-channels.json").write_text(json.dumps({"C1": {"name": "req-a", "requester": "U1"}}), encoding="utf-8")
             with self.assertLogs("pm_bot.bot_channels", "WARNING"):
                 migrate(d)
-            self.assertEqual(read_json(pathlib.Path(d, "conversations.json")), {"C1": {"side": "slack", "name": "req-a", "requester": "U1"}})
+            self.assertEqual(read_json(pathlib.Path(d, "conversations.json")), {"C1": {"chat_mode": "slack", "name": "req-a", "requester": "U1"}})
             pathlib.Path(d, "bot-channels.json").write_text(json.dumps({"C2": {}}), encoding="utf-8")
             migrate(d)
             self.assertEqual(list(read_json(pathlib.Path(d, "conversations.json"))), ["C1"])

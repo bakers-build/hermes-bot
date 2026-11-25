@@ -1,4 +1,4 @@
-# The GitLab side's part of the Hermes configuration (README.md › The GitLab side). With
+# The GitLab chat mode's part of the Hermes configuration (README.md › The GitLab chat mode). With
 # PM_BOT_CHAT=gitlab the entrypoint merges it over the rendered config.template.yaml: a mapping
 # merges key by key, any other value replaces, and null removes the key. So the bot runs the
 # bot-channels plugin's gitlab platform instead of Slack, with Slack's toolsets and its display
@@ -24,7 +24,7 @@ display:
     gitlab:
       interim_assistant_messages: false
 
-# The issue's toolsets are Slack's; cron loses the channel tool, which the GitLab side does not
+# The issue's toolsets are Slack's; cron loses the channel tool, which the GitLab chat mode does not
 # register: an audit ticket gets no conversation.
 platform_toolsets:
   slack: null

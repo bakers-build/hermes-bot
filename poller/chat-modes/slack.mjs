@@ -1,4 +1,4 @@
-// The poller's Slack side (README.md › Sides): a ticket's conversation is a Slack channel or
+// The poller's Slack chat mode (README.md › Chat modes): a ticket's conversation is a Slack channel or
 // thread; the bot renames a request channel after its ticket, archives it after the final post,
 // opens a fresh `-2` channel when the ticket is reopened and closes a request channel that stayed
 // silent for a week without a ticket.
@@ -94,15 +94,13 @@ export function relaySender({ slackApiUrl, slack, hermes = hermesSend }) {
 }
 
 /**
- * The Slack side of the poller's side contract.
- *
- * Each step gets `ctx` = {state, messages, client, now, writeState}, records what it did in
- * `ctx.state.channels` before the next one, and so resumes at the step not yet done.
+ * The Slack chat mode.
  *
  * @param {{slack: ReturnType<typeof createSlack>, send: Function, workspaceUrl: string}} options
  *   send: the relay of questions and technical problems (relaySender)
+ * @returns {import('../poller.mjs').ChatMode}
  */
-export function createSlackSide({ slack, send, workspaceUrl }) {
+export function createSlackChatMode({ slack, send, workspaceUrl }) {
   // The first free name from generation n on: Slack answers name_taken for a name in use.
   async function freeName(ticket, n, use) {
     for (let tries = 0; ; tries += 1, n += 1) {

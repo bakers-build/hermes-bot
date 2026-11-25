@@ -1,5 +1,5 @@
-// Pure core of the poller's ticket discovery: a ticket's conversation (its side reads it from
-// the links, poller/sides), inherited by sub-tickets that have none. No I/O.
+// Pure core of the poller's ticket discovery: a ticket's conversation (its chat mode reads it from
+// the links, poller/chat-modes), inherited by sub-tickets that have none. No I/O.
 
 /**
  * Gives each sub-ticket without a conversation that of its nearest ancestor with one, and

@@ -1,4 +1,4 @@
-// The GitLab side (README.md › The GitLab side): a second bot from the same image, in GitLab mode,
+// The GitLab chat mode (README.md › The GitLab chat mode): a second bot from the same image, in GitLab mode,
 // serves the issues of the stand-in's project e2e/shop. An issue is the request and its notes are
 // the conversation; the ticket follows the issue as it follows a channel on Slack.
 

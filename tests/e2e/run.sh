@@ -76,7 +76,7 @@ const text = fs.readFileSync(template, 'utf8').replace(/^(\w+)=@(\w+)@$/gm, (_, 
   return `${key}=${values[name]}`;
 });
 fs.writeFileSync(target, text, { mode: 0o600 });
-// The GitLab bot: the same keys, on the GitLab side.
+// The GitLab bot: the same keys, in the GitLab chat mode.
 fs.writeFileSync(gitlabTarget, text.replace(/^PM_BOT_CHAT=.*$/m, 'PM_BOT_CHAT=gitlab'), { mode: 0o600 });
 NODE
   [ $? = 0 ] || return 1

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// The end-to-end test's GitLab: the REST calls the GitLab side makes, on one project (e2e/shop),
+// The end-to-end test's GitLab: the REST calls the GitLab chat mode makes, on one project (e2e/shop),
 // answered from memory, every call recorded; and the webhook deliveries GitLab would send to the
 // hooks the bot registered, signed with each hook's secret, for every new issue and every note,
 // the bot's own included. No dependencies.

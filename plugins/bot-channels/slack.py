@@ -1,4 +1,4 @@
-"""The bot-channels plugin's Slack side: the intake in the bot's channel, the request channels'
+"""The bot-channels plugin's Slack chat mode: the intake in the bot's channel, the request channels'
 admission, reaction and trusted lines, and the nightly audit's channel tool (README.md › How it
 works). The shared core is channels.py and language.py."""
 
@@ -46,7 +46,7 @@ async def _open_channel(client, text, record):
     channel = created["channel"]["id"]
     with _bot_file_lock:
         bot = read_json(BOT_FILE, strict=True)
-        bot[channel] = {"side": "slack", "name": name, **record, "created": datetime.now(timezone.utc).isoformat()}
+        bot[channel] = {"chat_mode": "slack", "name": name, **record, "created": datetime.now(timezone.utc).isoformat()}
         write_json(BOT_FILE, bot)
     return channel, name
 

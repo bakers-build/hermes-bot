@@ -1,4 +1,4 @@
-// The poller on its GitLab side (README.md › The GitLab side): a ticket's conversation is the GitLab
+// The poller in its GitLab chat mode (README.md › The GitLab chat mode): a ticket's conversation is the GitLab
 // issue it links, and every post is a note on that issue.
 
 import assert from 'node:assert/strict';
@@ -31,7 +31,7 @@ test('the newest GitLab issue link to an issue of the project is the conversatio
 });
 
 test('given a ticket on an issue, when it moves on, then one note each appears there, also after a restart', async (t) => {
-  const { s, gitlab, poller, restart } = await setup(t, { side: 'gitlab' });
+  const { s, gitlab, poller, restart } = await setup(t, { chatMode: 'gitlab' });
   const ticket = s.addTicket({ title: 'Comic Sans', state: 'plan', links: [issue(gitlab)] });
   await poller.pass();
   ticket.state = 'working';
@@ -41,7 +41,7 @@ test('given a ticket on an issue, when it moves on, then one note each appears t
 });
 
 test('a ticket the bot opened its issue for gets a note naming its identifier and link, once', async (t) => {
-  const { s, gitlab, poller, botChannels, restart, state } = await setup(t, { side: 'gitlab' });
+  const { s, gitlab, poller, botChannels, restart, state } = await setup(t, { chatMode: 'gitlab' });
   botChannels(opened());
   s.addTicket({ title: 'Comic Sans', state: 'qualification', links: [issue(gitlab)], url: 'https://bakers.example/ticket/acme-1' });
   await poller.pass();
@@ -51,7 +51,7 @@ test('a ticket the bot opened its issue for gets a note naming its identifier an
 });
 
 test('done is noted with the ticket link, then the issue closed; a failed close retries only the close', async (t) => {
-  const { s, gitlab, poller, botChannels, state } = await setup(t, { side: 'gitlab' });
+  const { s, gitlab, poller, botChannels, state } = await setup(t, { chatMode: 'gitlab' });
   botChannels(opened());
   const ticket = s.addTicket({ title: 'Comic Sans', state: 'review', links: [issue(gitlab)], url: 'https://bakers.example/ticket/acme-1' });
   await poller.pass();
@@ -71,7 +71,7 @@ test('done is noted with the ticket link, then the issue closed; a failed close 
 });
 
 test('a reopened ticket reopens its issue and notes its state there, once', async (t) => {
-  const { s, gitlab, poller, botChannels, restart, state } = await setup(t, { side: 'gitlab' });
+  const { s, gitlab, poller, botChannels, restart, state } = await setup(t, { chatMode: 'gitlab' });
   botChannels(opened());
   const ticket = s.addTicket({ title: 'Comic Sans', state: 'review', links: [issue(gitlab)] });
   await poller.pass();
@@ -92,7 +92,7 @@ test('a reopened ticket reopens its issue and notes its state there, once', asyn
 });
 
 test('an issue without a ticket, silent for a week, gets a last note and is closed; a note in time keeps it', async (t) => {
-  const { gitlab, poller, botChannels, clock, state } = await setup(t, { side: 'gitlab' });
+  const { gitlab, poller, botChannels, clock, state } = await setup(t, { chatMode: 'gitlab' });
   botChannels({ ...opened(7, '2026-10-01T12:00:00Z'), ...opened(8, '2026-10-01T12:00:00Z') });
   for (const iid of ['7', '8']) gitlab.issues[iid] = { state: 'opened', created_at: '2026-10-01T12:00:00Z' };
   gitlab.notes['8'] = [{ id: 1, body: 'Any news?', created_at: new Date(clock.now - WEEK / 2).toISOString() }];
@@ -105,7 +105,7 @@ test('an issue without a ticket, silent for a week, gets a last note and is clos
 });
 
 test('a question of a ticket on an issue is a note there, with Slack markup turned into Markdown', async (t) => {
-  const { s, gitlab, poller } = await setup(t, { side: 'gitlab' });
+  const { s, gitlab, poller } = await setup(t, { chatMode: 'gitlab' });
   const ticket = s.addTicket({ title: 'Comic Sans', state: 'working', labels: ['technical problem'], frozen: true, frozen_at: '2026-11-05T11:00:00Z', links: [issue(gitlab)], url: 'https://bakers.example/ticket/acme-1' });
   s.addComment(ticket, { body: 'The test database <db> is down.', created: '2026-11-05T10:00:00Z' });
   await poller.pass();

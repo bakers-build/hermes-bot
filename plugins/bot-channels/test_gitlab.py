@@ -181,6 +181,21 @@ class Webhook(SideTest):
             self.side.register_hook()
         self.assertEqual(len(self.api.of("add_hook")), 1)
         self.assertEqual([c[0] for c in self.api.of("edit_hook")], [2])
+        self.assertEqual(self.api.of("test_hook"), [], "an executable hook gets no test delivery")
+
+    def test_a_disabled_hook_is_updated_and_reenabled_by_a_test_delivery(self):
+        self.api.hooks_list = [{"id": 2, "url": "https://bot.example/webhooks/gitlab", "alert_status": "disabled"}]
+        with self.assertLogs("pm_bot.bot_channels", "WARNING"):
+            self.side.register_hook()
+        self.assertEqual([c[0] for c in self.api.of("edit_hook")], [2])
+        self.assertEqual(self.api.of("test_hook"), [(2,)])
+
+    def test_a_failed_reenabling_is_logged(self):
+        self.api.hooks_list = [{"id": 2, "url": "https://bot.example/webhooks/gitlab", "alert_status": "temporarily_disabled"}]
+        self.api.fail.add("test_hook")
+        with self.assertLogs("pm_bot.bot_channels", "WARNING") as logs:
+            self.side.register_hook()
+        self.assertTrue(any("gitlab: webhook https://bot.example/webhooks/gitlab still disabled" in line for line in logs.output), logs.output)
 
     def test_a_failed_registration_is_logged_and_the_bot_keeps_running(self):
         self.api.fail.add("hooks")

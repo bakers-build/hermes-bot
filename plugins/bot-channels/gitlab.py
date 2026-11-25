@@ -96,6 +96,10 @@ class Api:
     def edit_hook(self, hook_id, settings):
         return self.call("PUT", f"{self.base}/hooks/{int(hook_id)}", settings)
 
+    def test_hook(self, hook_id):
+        # A successful test delivery is what re-enables a hook GitLab disabled; PUT does not.
+        return self.call("POST", f"{self.base}/hooks/{int(hook_id)}/test/push_events")
+
 
 def _settings(env):
     return {
@@ -243,7 +247,8 @@ class Side:
     # -- start ------------------------------------------------------------
 
     def register_hook(self):
-        """The project hook for GITLAB_WEBHOOK_URL, created or updated (which re-enables it); others stay."""
+        """The project hook for GITLAB_WEBHOOK_URL, created or updated, and re-enabled by a test delivery
+        when GitLab disabled it; others stay."""
         settings = {"url": self.webhook_url, "token": self.secret, "issues_events": True, "note_events": True,
                     "push_events": False, "enable_ssl_verification": True}
         try:
@@ -251,6 +256,12 @@ class Side:
             if hook:
                 self.api.edit_hook(hook["id"], settings)
                 logger.warning("gitlab: webhook %s updated", self.webhook_url)
+                if hook.get("alert_status", "executable") != "executable":
+                    try:
+                        self.api.test_hook(hook["id"])
+                        logger.warning("gitlab: webhook %s re-enabled", self.webhook_url)
+                    except Exception as exc:
+                        logger.error("gitlab: webhook %s still disabled (%s): %s", self.webhook_url, hook["alert_status"], exc)
             else:
                 self.api.add_hook(settings)
                 logger.warning("gitlab: webhook %s created", self.webhook_url)

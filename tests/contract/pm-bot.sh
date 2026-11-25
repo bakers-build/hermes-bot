@@ -258,7 +258,7 @@ need(not any("gitlab" in name.lower() for name in cfg.get("mcp_servers") or {}),
 plugin = open(plugin_file).read()
 urls = re.findall(r'f"\{self\.(root|base)\}([^"]*)"', plugin)
 allowed = [("root", r"/api/v4/user"), ("root", r"/api/v4/users/\{int\(user_id\)\}"), ("root", r"/api/v4/projects/\{urllib\.parse\.quote\(project, safe=''\)\}"),
-           ("base", r"/issues(/\{int\(iid\)\})?(/notes(\?[^\"]*)?)?(\?[^\"]*)?"), ("base", r"/issues/\{int\(iid\)\}"), ("base", r"/hooks(/\{int\(hook_id\)\})?"),
+           ("base", r"/issues(/\{int\(iid\)\})?(/notes(\?[^\"]*)?)?(\?[^\"]*)?"), ("base", r"/issues/\{int\(iid\)\}"), ("base", r"/hooks(/\{int\(hook_id\)\}(/test/push_events)?)?"),
            ("root", r"/\{self\.project\}/-/issues/\{iid\}")]  # the issue's web link, not a call
 for kind, path in urls:
     need(any(kind == k and re.fullmatch(p, path) for k, p in allowed), f"gitlab.py calls {{{kind}}}{path}")
@@ -361,6 +361,14 @@ for word in bb-create-ticket 'Slack user' /archives/ labels_remove frozen 'Answe
   grep -qF -- "$word" "$SOUL" || fail "$SOUL does not name $word"
 done
 pass "SOUL.template.md gives bb-create-ticket its host context and carries status and answers"
+
+# An answer that also asks for more is first an answer: the Question branch precedes the new-request one.
+answers=$(grep -nF -- "labelled \`Question\` and frozen → *Answers*" "$SOUL" | head -1 | cut -d: -f1)
+different=$(grep -nF -- '- a **new, different request**' "$SOUL" | head -1 | cut -d: -f1)
+[ -n "$answers" ] && [ -n "$different" ] && [ "$answers" -lt "$different" ] \
+  && grep -qF 'a message that answers the open question and also asks for more is an answer' "$SOUL" \
+  || fail "$SOUL lets a new request win over an answer to the open question"
+pass "SOUL.template.md passes an answer on before it turns down an extra wish"
 
 # The hand-over: the bot judges whether a code review is advisable, proposes it without naming
 # its cost (the requester already knows a review is charged), and sets human-review only after

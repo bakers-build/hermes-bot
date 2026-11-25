@@ -15,7 +15,7 @@ const issue = (gitlab, iid = 7) => ({ uri: `${gitlab.url}/acme/shop/-/issues/${i
 // The issue as the plugin records it when the bot answers it (conversations.json).
 const opened = (iid = 7, created = '2026-11-05T11:00:00Z') => ({ [iid]: { requester: 42, requester_username: 'alice', created } });
 
-test('the newest link to an issue of the project is the conversation; other projects and other links are not', () => {
+test('the newest GitLab issue link to an issue of the project is the conversation; other projects, other titles and other links are not', () => {
   const url = 'https://gitlab.example';
   const project = 'acme/shop';
   const links = [
@@ -23,6 +23,7 @@ test('the newest link to an issue of the project is the conversation; other proj
     { uri: 'https://gitlab.example/acme/shop/-/merge_requests/9', title: 'MR' },
     { uri: 'https://gitlab.example/acme/shop/-/issues/5#note_1', title: 'GitLab issue' },
     { uri: 'https://gitlab.example/acme/other/-/issues/8', title: 'GitLab issue' },
+    { uri: 'https://gitlab.example/acme/shop/-/issues/9', title: 'Related bug' },
   ];
   assert.deepEqual(conversation(links, { url, project }), { channel: '5', url: 'https://gitlab.example/acme/shop/-/issues/5#note_1' });
   assert.equal(conversation([{ uri: 'https://acme.slack.com/archives/C0000000001', title: 'Slack channel' }], { url, project }), null);

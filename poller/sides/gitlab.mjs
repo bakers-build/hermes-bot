@@ -9,15 +9,16 @@ import { WEEK } from '../channels.mjs';
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
- * The ticket's issue: its NEWEST link to an issue of the project, by URL.
+ * The ticket's issue: its NEWEST link titled *GitLab issue* (the persona's title) to an issue of
+ * the project; other links to the project's issues are cross-references, as non-`chat` links in Slack.
  *
- * @param {Array<{uri: string}>} links the ticket's `links` field
+ * @param {Array<{uri: string, title?: string}>} links the ticket's `links` field
  * @param {{url: string, project: string}} gitlab GITLAB_URL and GITLAB_PROJECT (the project's path)
  * @returns {{channel: string, url: string} | null} channel: the issue's IID
  */
 export function conversation(links, { url, project }) {
   const pattern = new RegExp(`^${escapeRegExp(`${url.replace(/\/$/, '')}/${project}`)}/-/issues/(\\d+)(?:[?#].*)?$`);
-  const found = (links ?? []).map((l) => [l, String(l.uri).match(pattern)]).filter(([, m]) => m).pop();
+  const found = (links ?? []).filter((l) => l.title === 'GitLab issue').map((l) => [l, String(l.uri).match(pattern)]).filter(([, m]) => m).pop();
   return found ? { channel: found[1][1], url: found[0].uri } : null;
 }
 

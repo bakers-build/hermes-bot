@@ -12,6 +12,10 @@ const messages = JSON.parse(readFileSync(new URL('../../../poller/messages.json'
 // The scripted model answers the GitLab bot; --real gives it a model that finds its own words.
 const only = { skip: !scripted && 'plays scripted model turns and the stub agent' };
 
+// The gateway runs Hermes' background skill review after a conversation; it learns nothing here.
+const review = { user: 'update the skill library', repeat: true, reply: [{ text: 'Nothing to save.' }] };
+const script = (rules) => model.script([...rules, review]);
+
 const nextIid = async () => (await gitlab.state()).issues.length + 1;
 const hasNote = (iid, text) => waitFor(`a note on issue ${iid} with "${text}"`, async () => (await gitlab.botNotes(iid)).find((n) => n.includes(text)));
 const bot = 'pm-bot-gitlab';
@@ -19,7 +23,7 @@ const bot = 'pm-bot-gitlab';
 /** An issue the bot took in, answered with one line; the ticket created on it without the model. */
 async function ticketOnIssue(title) {
   const iid = await nextIid();
-  await model.script([{ user: title, reply: [{ text: 'I am looking at it.' }] }]);
+  await script([{ user: title, reply: [{ text: 'I am looking at it.' }] }]);
   await gitlab.issue(title);
   await hasNote(iid, 'I am looking at it.');
   const created = await site.tool('bakers_ticket_create', { title, workflow: seed.workflow, project: seed.project_uuid, description: `${title}.` });
@@ -37,7 +41,7 @@ before(async () => {
 test('given GitLab mode, when an issue is opened and its author says yes, then the ticket exists on the issue and the issue names it', only, async () => {
   const iid = await nextIid();
   const title = 'Member login from GitLab';
-  await model.script(handoverScript({ ch: { link: gitlab.issueUrl(iid) }, title, linkTitle: 'GitLab issue' }));
+  await script(handoverScript({ ch: { link: gitlab.issueUrl(iid) }, title, linkTitle: 'GitLab issue' }));
   await gitlab.issue('We need a login page for members', { description: `${title}.` });
   await hasNote(iid, '@alice Danke, ich habe deine Anfrage erhalten');
   await hasNote(iid, 'Who signs in, and with what?');
@@ -87,7 +91,7 @@ test('given a run that asked a question, when a participant answers in a note, t
   await waitFor(`${ticket.identifier} frozen with Question`, async () => (await site.ticket(ticket.identifier)).frozen);
   await hasNote(iid, 'Should members also sign in with a username');
   const heading = `Answered in GitLab by ${BOB.name} (GitLab user ${BOB.username}):`;
-  await model.script([
+  await script([
     { user: 'e-mail address', reply: [{ tool: 'bakers_ticket_read', input: { ticket: ticket.identifier } }] },
     { tool_result: '"frozen":\\s*true', after: 'bakers_ticket_read', reply: [{ tool: 'bakers_comment_create', input: { ticket: ticket.identifier, type: 'comment', body: `${heading}\n\nOnly with the e-mail address.` } }] },
     { tool_result: '.', after: 'bakers_comment_create', reply: [{ tool: 'bakers_ticket_update', input: { ticket: ticket.identifier, labels_remove: ['Question'], frozen: false } }] },
@@ -106,7 +110,7 @@ test('given a run that asked a question, when a participant answers in a note, t
 });
 
 test('given deliveries the bot must refuse, when they arrive, then nothing happens on the issue or the model', only, async () => {
-  await model.script([]);
+  await script([]);
   const wrong = await nextIid();
   await gitlab.issue('A request with the wrong secret', { token: 'guess' });
   await gitlab.issue('A request from another project', { project: 'e2e/other' });
@@ -123,7 +127,7 @@ test('given the bot restarts, when a note came while it was down, then it is ans
   const { iid, ticket } = await ticketOnIssue('Catch up after a restart');
   await compose(['stop', bot]);
   await gitlab.note(iid, 'Missed while you were away?');
-  await model.script([{ user: 'Missed while you were away', reply: [{ text: 'Caught up.' }] }]);
+  await script([{ user: 'Missed while you were away', reply: [{ text: 'Caught up.' }] }]);
   await compose(['start', bot]);
   await hasNote(iid, 'Caught up.');
   await never('a second answer', async () => (await gitlab.botNotes(iid)).filter((n) => n === 'Caught up.').length > 1, { ms: 10_000 });

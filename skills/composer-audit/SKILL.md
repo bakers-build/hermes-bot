@@ -73,7 +73,7 @@ In this order:
 
 1. `mcp_bakers__tool_api__bakers_ticket_create` with `project: "${PM_BOT_PROJECT}"`, `workflow: "${PM_BOT_TICKET_WORKFLOW}"`, `type: "chore"`, `title: "Security updates: <n> Composer advisories (<packages>)"` and `description`: one sentence that the nightly Composer audit found these advisories in the clone at the marker's `head`, then the tables. Pass nothing else.
 2. `mcp_bakers__tool_api__bakers_conductor_list` with the project. When the project has exactly one active conductor, call `mcp_bakers__tool_api__bakers_ticket_update` with the ticket, `labels_add: ["security"]` and `conductor` = its UUID. Otherwise call it with `labels_add: ["security"]` alone, and your answer says no conductor was set and why (none active, or several).
-3. `open_request_channel` with the title. Then `mcp_bakers__tool_api__bakers_ticket_transition` with the ticket and `links: [{"uri": <link>, "title": "Slack channel"}]`, without a state.
+3. `open_request_channel` with the title. Then `mcp_bakers__tool_api__bakers_ticket_transition` with the ticket and `links: [{"uri": <link>, "title": "Slack channel"}]`, without a state. Without an `open_request_channel` tool the bot talks in GitLab issues, and the ticket stays without a conversation: skip this step, and your answer names no channel.
 
 When a step after the create fails, your answer names it, so a person can finish it by hand.
 

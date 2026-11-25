@@ -3,11 +3,12 @@
 # pm-bot is production's service; this file changes only its mode, network and start order
 # (tests/contract/pm-bot.sh checks it). Beside it: a bakers.build site from the published release
 # images (adapted from bakers.build's docker/compose/docker-compose.yml), a conductor with a stub
-# agent, a scripted model, a Slack recorder and a Composer repository serving one security
-# advisory. Nothing here is a credential.
+# agent, a scripted model, a Slack recorder, a Composer repository serving one security
+# advisory, and the GitLab side: a second bot from production's image in GitLab mode beside a
+# GitLab stand-in. Nothing here is a credential.
 #
 # Variables run.sh sets: PM_BOT_IMAGE, PM_BOT_DATA, PM_BOT_CLONE, PM_BOT_UID, PM_BOT_GID (the
-# production file's), BAKERS_VERSION, E2E_AGENT (the stub's script directory), E2E_CONDUCTOR (the
+# production file's), PM_BOT_GITLAB_DATA (the GitLab bot's data directory), BAKERS_VERSION, E2E_AGENT (the stub's script directory), E2E_CONDUCTOR (the
 # conductor's home) and E2E_CONDUCTOR_AGENT (stub or claude). Relative paths are the repository
 # root's, as compose resolves them against the first file.
 
@@ -159,6 +160,40 @@ services:
     command: [node, /srv/advisories.mjs]
     volumes:
       - ./tests/e2e/advisories:/srv:ro
+    ports:
+      - 127.0.0.1::80
+
+  # The GitLab side's bot: production's image and lock-down in mode run, poller and gateway, with
+  # its own data directory and env file (PM_BOT_CHAT=gitlab), talking to the stand-in. GitLab's
+  # webhooks reach it on its port 8080 inside the stack.
+  pm-bot-gitlab:
+    image: ${PM_BOT_IMAGE}
+    command: [run]
+    env_file: ${PM_BOT_GITLAB_DATA}/.env
+    environment:
+      HERMES_UID: ${PM_BOT_UID}
+      HERMES_GID: ${PM_BOT_GID}
+    volumes:
+      - ${PM_BOT_GITLAB_DATA}:/opt/data
+      - ${PM_BOT_CLONE}:/opt/clone:ro
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    depends_on: [nginx, model, gitlab]
+
+  # The GitLab of project e2e/shop (tests/e2e/gitlab-stand-in): its API, recorded, and webhook
+  # deliveries to the hooks the bot registers.
+  gitlab:
+    image: node:22-slim
+    command: [node, /srv/stand-in.mjs]
+    volumes:
+      - ./tests/e2e/gitlab-stand-in:/srv:ro
     ports:
       - 127.0.0.1::80
 

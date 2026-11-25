@@ -1,0 +1,42 @@
+# The GitLab side's part of the Hermes configuration (README.md › The GitLab side). With
+# PM_BOT_CHAT=gitlab the entrypoint merges it over the rendered config.template.yaml: a mapping
+# merges key by key, any other value replaces, and null removes the key. So the bot runs the
+# bot-channels plugin's gitlab platform instead of Slack, with Slack's toolsets and its display
+# setting carried over. tests/contract/pm-bot.sh asserts the lock-down below.
+
+# No Slack.
+slack: null
+
+platforms:
+  gitlab:
+    enabled: true
+    # Hermes asks every new conversation to pick a home channel unless one is set. Nothing is
+    # delivered there: the nightly audit's answer stays in its cron output.
+    home_channel:
+      platform: gitlab
+      chat_id: "0"
+      name: none
+
+# The model's working notes stay out of the issue, as they stay out of Slack.
+display:
+  platforms:
+    slack: null
+    gitlab:
+      interim_assistant_messages: false
+
+# The issue's toolsets are Slack's; cron loses the channel tool, which the GitLab side does not
+# register: an audit ticket gets no conversation.
+platform_toolsets:
+  slack: null
+  gitlab:
+    - skills
+    - memory
+    - session_search
+    - mcp-clone-reader
+    - mcp-bakers
+  cron:
+    - terminal
+    - skills
+    - mcp-bakers
+known_plugin_toolsets:
+  slack: null

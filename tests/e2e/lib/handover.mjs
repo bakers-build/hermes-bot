@@ -7,7 +7,7 @@ const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 
 // What bb-create-ticket and the persona make the model do, as tool calls: the scripted model's
 // part. The real model finds its own way to the same ticket.
-export function handoverScript({ ch, title }) {
+export function handoverScript({ ch, title, linkTitle = 'Slack channel' }) {
   const comment = (type, body, after) => ({ tool_result: '.', after, reply: [{ tool: 'bakers_comment_create', input: { ticket: '{{ticket}}', type, body } }] });
   return [
     { user: 'login page', reply: [{ text: 'Who signs in, and with what? Shall I hand it over as described?' }] },
@@ -17,7 +17,7 @@ export function handoverScript({ ch, title }) {
       after: 'bakers_user_read',
       reply: [{ tool: 'bakers_ticket_create', input: { title, description: 'Members sign in with their e-mail address.', workflow: seed.workflow, project: seed.project_uuid, type: 'feature', recipe: 'matt', reviewers: ['{{requester}}'] } }],
     },
-    { tool_result: `"identifier":\\s*"(?<ticket>E2E-\\d+)"`, after: 'bakers_ticket_create', reply: [{ tool: 'bakers_ticket_transition', input: { ticket: '{{ticket}}', links: [{ uri: ch.link, title: 'Slack channel' }] } }] },
+    { tool_result: `"identifier":\\s*"(?<ticket>E2E-\\d+)"`, after: 'bakers_ticket_create', reply: [{ tool: 'bakers_ticket_transition', input: { ticket: '{{ticket}}', links: [{ uri: ch.link, title: linkTitle }] } }] },
     comment('qualification', '# Qualification\n\nMembers sign in with their e-mail address.', 'bakers_ticket_transition'),
     comment('spec', '# Spec\n\nA login page.', 'bakers_comment_create'),
     comment('plan', '# Plan\n\n1. The form.', 'bakers_comment_create'),

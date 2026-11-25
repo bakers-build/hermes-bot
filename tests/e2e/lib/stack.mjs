@@ -7,6 +7,7 @@
 //   slack       the Slack calls the poller made, from the recorder
 //   agent       the stub agent's script for a ticket's next run
 //   channel     a request channel as the bot-channels plugin records it, for the poller
+//   gitlab      the GitLab stand-in: issues and notes opened as its users, its calls and state
 //   audit       the nightly composer-audit job: the clone and pull marker it reads, a run, its answer
 //   restart     a service of the stack
 //
@@ -146,20 +147,46 @@ export const agent = {
 };
 
 /**
- * A request channel as the bot-channels plugin records it when it opens one (bot-channels.json in
+ * A request channel as the bot-channels plugin records it when it opens one (conversations.json in
  * the bot's data directory): the poller renames, archives and reopens only those.
  */
 export function channel(id, { requester = 'U0E2EREQ', email = seed.requester_email } = {}) {
-  const file = join(OUT, 'data', 'bot-channels.json');
+  const file = join(OUT, 'data', 'conversations.json');
   let bot = {};
   try {
     bot = JSON.parse(readFileSync(file, 'utf8'));
   } catch {}
-  bot[id] = { name: `req-${id.toLowerCase()}`, requester, created: new Date().toISOString(), requester_email: email };
+  bot[id] = { side: 'slack', name: `req-${id.toLowerCase()}`, requester, created: new Date().toISOString(), requester_email: email };
   writeFileSync(`${file}.tmp`, JSON.stringify(bot, null, 2));
   renameSync(`${file}.tmp`, file);
   return { id, link: `${WORKSPACE_URL}/archives/${id}` };
 }
+
+// The GitLab stand-in's users: the requester, whose public address is the seeded requester's, and
+// another participant.
+export const ALICE = { id: 42, username: 'alice', name: 'Alice Requester' };
+export const BOB = { id: 43, username: 'bob', name: 'Bob Member' };
+
+export const gitlab = {
+  project: 'e2e/shop',
+  issueUrl: (iid) => `http://gitlab/e2e/shop/-/issues/${iid}`,
+  async post(path, body) {
+    const res = await http('gitlab', 'POST', path, { body, headers: { 'content-type': 'application/json' } });
+    if (res.status >= 300) throw new Error(`gitlab ${path}: ${res.status} ${res.text}`);
+    return JSON.parse(res.text);
+  },
+  users: () => gitlab.post('/_users', { [ALICE.id]: { ...ALICE, public_email: seed.requester_email }, [BOB.id]: { ...BOB, public_email: '' } }),
+  /** An issue opened by `user`; `token` or `project` make a delivery the bot must refuse. */
+  issue: (title, { description = '', user = ALICE, ...override } = {}) => gitlab.post('/_issue', { title, description, user, ...override }),
+  note: (iid, body, user = ALICE) => gitlab.post('/_note', { iid, body, user }),
+  state: async () => JSON.parse((await http('gitlab', 'GET', '/_state')).text),
+  calls: async () => JSON.parse((await http('gitlab', 'GET', '/_calls')).text),
+  /** The bot's notes on an issue, oldest first. */
+  botNotes: async (iid) => ((await gitlab.state()).issues.find((i) => i.iid === iid)?.notes ?? []).filter((n) => n.author.username === 'pm-bot').map((n) => n.body),
+  issueState: async (iid) => (await gitlab.state()).issues.find((i) => i.iid === iid)?.state,
+  /** The GitLab bot's poller state: the state it last posted for a ticket. */
+  pollerState: (identifier) => JSON.parse(readFileSync(join(OUT, 'data-gitlab', 'poller-state.json'), 'utf8')).tickets?.[identifier],
+};
 
 export const audit = {
   /**

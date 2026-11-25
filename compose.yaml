@@ -4,6 +4,9 @@
 #   PM_BOT_DATA   ~/.pm-bot/data: Hermes' home with sessions, memories and the env file
 #   PM_BOT_CLONE  ~/.pm-bot/clone: the secret-free clone of the project's repository
 #   PM_BOT_UID, PM_BOT_GID  the workspace user, whom Hermes maps its hermes user to
+#   PM_BOT_WEBHOOK_PUBLISH  optional, on the GitLab side: where the host publishes the container's
+#                 webhook port 8080 (GITLAB_WEBHOOK_PORT's default), e.g. 0.0.0.0:8080:8080 behind
+#                 the TLS proxy GITLAB_WEBHOOK_URL names; by default a free port on 127.0.0.1 only
 #
 # The container sees those two directories only, the clone read-only, and never the Docker
 # socket. Hermes' bootstrap starts as root to remap its user and prepare the data directory,
@@ -17,6 +20,8 @@ services:
     environment:
       HERMES_UID: ${PM_BOT_UID}
       HERMES_GID: ${PM_BOT_GID}
+    ports:
+      - ${PM_BOT_WEBHOOK_PUBLISH:-127.0.0.1::8080}
     volumes:
       - ${PM_BOT_DATA}:/opt/data
       - ${PM_BOT_CLONE}:/opt/clone:ro

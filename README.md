@@ -115,7 +115,7 @@ Once, on this machine:
 ```sh
 echo '127.0.0.1 nginx' | sudo tee -a /etc/hosts               # the site answers to the host name nginx alone
 tests/e2e/run.sh ghcr.io/bakers-build/hermes-bot:main --keep --only status   # the site, seeded; leaves it running
-cp webui/.env.example webui/.env                                 # then fill in PM_BOT_CLONE and the model credential
+install -m 600 webui/.env.example webui/.env                     # then fill in PM_BOT_CLONE and the model credential
 webui/register-client.sh                                         # the site's bot key, project, OAuth client and users
 ```
 
@@ -132,7 +132,7 @@ docker compose -f webui/compose.yaml down
 
 **How it fits together.** `prepare` runs the bot image's `entrypoint.sh check` once, so the Hermes home holds the bot's config, persona, skills and plugin and has reached bakers.build's `/mcp`. `setup` installs the Anthropic and MCP packages into Hermes' dependency environment and renders one profile per user: the bot's home, plus the trusted line of a request channel that names the user as the requester, so a ticket the bot opens from their session names them as the reviewer. `oauth2-proxy` signs people in at bakers.build and passes their user ID to the web UI, which trusts it from the proxy's address alone and binds the user to their profile. `bakers-front` serves the site to the browser as http://nginx:8788. `down -v` wipes the home with its sessions, and is needed after changing or pulling `PM_BOT_IMAGE`. Run it once as well when a home from before the sign-in exists: its dependency environment lacks the MCP package. The web UI runs no clone reader (its container has no working Node).
 
-**What stays open.** Every signed-in user reaches the web UI's terminal, workspace file browser (edit and delete), settings, cron and skills, and can edit their profile's persona and trusted line. Anyone else with an account on the site who signs in lands in the profile `default`, the bot's own home. Keep it on this machine.
+**What stays open.** Every signed-in user reaches the web UI's terminal, workspace file browser (edit and delete), settings, cron and skills, and can edit their profile's persona and trusted line. The separation of profiles holds in the web UI's pages only: the terminal and the file browser reach every profile and the bot's home, and the terminal sees every value of `webui/.env`, its secrets included (the web UI's container gets that env file). Anyone else with an account on the site who signs in lands in the profile `default`, the bot's own home. Keep it on this machine.
 
 ## Test it by hand
 

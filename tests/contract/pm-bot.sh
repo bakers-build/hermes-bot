@@ -52,8 +52,8 @@
 #   - platform_toolsets.cli equals .slack, model.base_url comes from PM_BOT_MODEL_BASE_URL
 #     (default Anthropic's), and mode agent runs the poller without the gateway
 #   - CI's image job runs the end-to-end test on the image it built, before Publish
-#   - the local web UI (webui/): both images pinned by digest, only the sign-in proxy published
-#     and on 127.0.0.1, the web UI trusting identity headers from the proxy's address alone, the
+#   - the local web UI (webui/): the web UI and proxy images pinned by digest, only the sign-in
+#     proxy and the site's front published, both on 127.0.0.1, the web UI unpublished and trusting identity headers from the proxy's address alone, the
 #     user's bakers.build ID as the group that picks their profile; the example env sets no
 #     nightly job and inert Slack values, and the real env is ignored
 # Needs python3 with PyYAML.

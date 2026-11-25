@@ -106,6 +106,20 @@ GitHub CI runs the first three in its `tests` job; its `image` job builds the im
 
 The scenarios (`tests/e2e/scenarios/`) assert what the site and the recorder hold, never wording. `--only <scenario>` runs one scenario file, named without `.e2e.mjs` (e.g. `--only questions`), `--keep` leaves the stack running (`bash tests/e2e/run.sh down` removes it), `--real` uses a real model for the bot and Claude Code for the conductor (`ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`; a failure may then be the model's). A failed run leaves the stack's logs, the model's turns, the Slack calls, the poller's state, the advisory requests and the audit's runs in `tests/e2e/out/logs/`.
 
+## Look at it in Hermes WebUI
+
+For local use only: a first look at the bot's Hermes in [Hermes WebUI](https://github.com/nesquena/hermes-webui) (0.52.732, pinned by digest in `webui/compose.yaml`), without Slack and without a workspace. It is no deployment: `compose.yaml` and the image stay as they are, and a bot started from them serves no web UI. The web UI has no sign-in and listens on `127.0.0.1:8787` only.
+
+```sh
+cp webui/.env.example webui/.env          # fill it in, see below
+docker compose -f webui/compose.yaml up   # then open http://127.0.0.1:8787
+docker compose -f webui/compose.yaml down
+```
+
+`webui/.env` needs the model credential (`ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`), `BAKERS_URL`, `BAKERS_API_KEY` of a service account and `PM_BOT_PROJECT`, and `PM_BOT_CLONE`, the absolute path of a clone of the project. Use a sandbox project: the bot really creates tickets there. `PM_BOT_IMAGE` picks the bot image (default `ghcr.io/bakers-build/hermes-bot:main`). The Slack values stay inert, and `AUDIT_ENABLED=false` keeps the nightly job out. The published image is amd64 only: on Apple silicon add `DOCKER_DEFAULT_PLATFORM=linux/amd64` to `webui/.env`, and everything runs emulated.
+
+`prepare` runs the bot image's `entrypoint.sh check` once, so the web UI's Hermes home holds the bot's config, persona, skills and plugin and has reached bakers.build's `/mcp`; `webui` waits for it. The very first message after a new home fails with *anthropic installed; restart Hermes to activate it*: run `docker compose -f webui/compose.yaml restart webui` once. `down -v` wipes the home with its sessions, and is needed after changing `PM_BOT_IMAGE`. The web UI runs no clone reader (its container has no working Node).
+
 ## Test it by hand
 
 On a workspace running the bot, with the service user's profile set and the Slack app reinstalled with `channels:manage`, `reactions:write` and `users:read.email`, and three people or places: the **requester**, a **second member**, and an **outsider channel** the bot was invited to but did not open. Record each step with its channel name and link and the ticket as bakers.build shows it.

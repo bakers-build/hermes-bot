@@ -1,0 +1,73 @@
+# A first look at Hermes WebUI on the PM bot's Hermes, on this machine only (README.md › Look at
+# it in Hermes WebUI). Not the bot's deployment: compose.yaml and the image stay as they are.
+#
+#   cp webui/.env.example webui/.env   # then fill it in
+#   docker compose -f webui/compose.yaml up
+#   open http://127.0.0.1:8787
+#   docker compose -f webui/compose.yaml down      # add -v after changing PM_BOT_IMAGE
+#
+# Upstream's two-container pattern (its docker-compose.two-container.yml), without a gateway:
+#   prepare  the unchanged bot image runs `entrypoint.sh check` once: it renders config.yaml,
+#            SOUL.md, the shipped skills and the plugin into the volume home (the bot's HERMES_HOME), tests
+#            bakers.build's /mcp, and exits.
+#   agent-src  copies the bot image's /opt/hermes (the bot's Hermes) into a volume, without its
+#            .venv: with one there, Hermes refuses to install its Anthropic SDK into the web UI's
+#            own environment ("not running from the install's dependency environment").
+#   webui    Hermes WebUI runs that Hermes in-process on home, as platform cli.
+services:
+  agent-src:
+    image: ${PM_BOT_IMAGE:-ghcr.io/bakers-build/hermes-bot:main}
+    entrypoint: [rm, -rf, /opt/hermes/.venv]
+    restart: "no"
+    volumes:
+      - agent-src:/opt/hermes
+
+  prepare:
+    image: ${PM_BOT_IMAGE:-ghcr.io/bakers-build/hermes-bot:main}
+    command: [check]
+    restart: "no"
+    env_file: .env
+    environment:
+      # One owner for home in both containers.
+      HERMES_UID: 1000
+      HERMES_GID: 1000
+    volumes:
+      - home:/opt/data
+      - ${PM_BOT_CLONE:?set PM_BOT_CLONE in webui/.env}:/opt/clone:ro
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+
+  webui:
+    # 0.52.732
+    image: ghcr.io/nesquena/hermes-webui:0.52.732@sha256:6536ce0611faca518c3c6d07166601e4d1413abac4b7e43db58ec8ef75d0f09d
+    depends_on:
+      prepare:
+        condition: service_completed_successfully
+      agent-src:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:8787:8787"
+    env_file: .env
+    environment:
+      HERMES_HOME: /opt/data
+      HERMES_WEBUI_STATE_DIR: /opt/data/webui
+      WANTED_UID: 1000
+      WANTED_GID: 1000
+    volumes:
+      - home:/opt/data
+      - ${PM_BOT_CLONE}:/opt/clone:ro
+      - agent-src:/opt/hermes:ro
+
+volumes:
+  # A volume, not a bind mount: Hermes unpacks a Python into it, whose terminfo names collide on
+  # macOS' case-insensitive file system. `down -v` wipes it with the sessions.
+  home:
+  # Filled from PM_BOT_IMAGE on the first up only: `down -v` after changing the image.
+  agent-src:

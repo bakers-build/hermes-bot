@@ -589,6 +589,35 @@ sys.exit(1 if errors else 0)
 PY
 pass "CI runs the end-to-end test on the image it built, before Publish"
 
+# The local Hermes WebUI look (webui/, README.md › Look at it in Hermes WebUI): a pinned image,
+# reachable from this machine only, no nightly job in the shared home, Slack values inert.
+WEBUI=webui/compose.yaml
+WEBUI_ENV=webui/.env.example
+[ -f "$WEBUI" ] && [ -f "$WEBUI_ENV" ] || fail "$WEBUI or $WEBUI_ENV is missing"
+python3 - "$WEBUI" "$WEBUI_ENV" <<'PY' || fail "the local web UI is not pinned, local-only and inert (see above)"
+import re, sys, yaml
+
+compose, env_file = sys.argv[1:]
+errors = []
+svc = ((yaml.safe_load(open(compose)) or {}).get("services") or {}).get("webui") or {}
+if not re.fullmatch(r"ghcr\.io/nesquena/hermes-webui(:[\w.-]+)?@sha256:[0-9a-f]{64}", str(svc.get("image", ""))):
+    errors.append(f"the webui image {svc.get('image')!r} is not pinned by digest")
+ports = [str(p) for p in svc.get("ports") or []]
+if not ports or any(not p.startswith("127.0.0.1:") for p in ports):
+    errors.append(f"the webui ports {ports} are not bound to 127.0.0.1 only")
+env = dict(re.findall(r"^([A-Z][A-Z0-9_]*)=(.*)$", open(env_file).read(), re.M))
+if env.get("AUDIT_ENABLED") != "false":
+    errors.append(f"{env_file} does not set AUDIT_ENABLED=false")
+for key in ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"):
+    if not env.get(key, "").endswith("-inert"):
+        errors.append(f"{env_file} does not give {key} an inert value")
+for e in errors:
+    print("FAIL:", e, file=sys.stderr)
+sys.exit(1 if errors else 0)
+PY
+git check-ignore -q webui/.env || fail "webui/.env is not ignored"
+pass "the local web UI: pinned by digest, on 127.0.0.1 only, no nightly job, inert Slack, env ignored"
+
 echo "OK: pm-bot lock-down and configurability contract holds"
 
 python3 - <<'PYTEST'

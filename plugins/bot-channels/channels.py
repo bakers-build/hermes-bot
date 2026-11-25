@@ -123,7 +123,7 @@ def migrate(data):
 
 
 def text(code, key, **values):
-    """The plugin's Slack text ``key`` in language ``code``, German when it has none."""
+    """The plugin's text ``key`` in language ``code``, German when it has none."""
     return MESSAGES.get(code, MESSAGES[DEFAULT_LANGUAGE])[key].format(**values)
 
 

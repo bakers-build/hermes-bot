@@ -29,21 +29,13 @@ import urllib.parse
 import urllib.request
 
 from . import language
-from .channels import CONVERSATIONS_FILE, DATA, DEFAULT_LANGUAGE, LANGUAGE_FILE, POLLER_FILE, issue_prompt, read_json, write_json
+from .channels import CONVERSATIONS_FILE, DATA, DEFAULT_LANGUAGE, LANGUAGE_FILE, POLLER_FILE, issue_prompt, read_json, text, write_json
 
 logger = logging.getLogger("pm_bot.bot_channels")
 
 WEBHOOK_FILE = os.path.join(DATA, "gitlab-webhook.json")
 WEBHOOK_PATH = "/webhooks/gitlab"
 TIMEOUT = 20
-TEXTS = {
-    "de": {"acknowledge": "@{username} Danke, ich habe deine Anfrage erhalten und schaue sie mir an. Ich antworte gleich hier."},
-    "en": {"acknowledge": "@{username} Thanks, I've got your request and I'm looking into it. I'll answer here shortly."},
-}
-
-
-def acknowledgement(code, username):
-    return TEXTS.get(code, TEXTS[DEFAULT_LANGUAGE])["acknowledge"].format(username=username)
 
 
 class Api:
@@ -217,11 +209,11 @@ class Side:
                      created=issue.get("created_at") or "", **({"requester_email": email} if email else {}))
         self._mark_issue(iid)
         try:
-            self.api.note(iid, acknowledgement(self.lang["code"], username))
+            self.api.note(iid, text(self.lang["code"], "acknowledgeIssue", username=username))
         except Exception as exc:
             logger.error("gitlab: acknowledging issue %s: %s", iid, exc)
-        text = "\n\n".join(part for part in (issue.get("title"), issue.get("description")) if part)
-        self.hand_on({"iid": str(iid), "text": text, "message_id": f"issue-{iid}", "user_id": str(author),
+        request = "\n\n".join(part for part in (issue.get("title"), issue.get("description")) if part)
+        self.hand_on({"iid": str(iid), "text": request, "message_id": f"issue-{iid}", "user_id": str(author),
                       "user_name": f"{name} | GitLab user @{username}", "kind": "issue", "note_id": None})
         return "request"
 

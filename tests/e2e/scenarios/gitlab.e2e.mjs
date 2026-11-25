@@ -8,7 +8,9 @@ import { before, test } from 'node:test';
 import { handoverScript } from '../lib/handover.mjs';
 import { agent, BOB, cancel, compose, gitlab, model, moveTo, never, reopen, scripted, seed, site, waitFor } from '../lib/stack.mjs';
 
-const messages = JSON.parse(readFileSync(new URL('../../../poller/messages.json', import.meta.url), 'utf8')).de;
+const read = (path) => JSON.parse(readFileSync(new URL(path, import.meta.url), 'utf8')).de;
+const messages = read('../../../poller/messages.json');
+const plugin = read('../../../plugins/bot-channels/messages.json');
 // The scripted model answers the GitLab bot; --real gives it a model that finds its own words.
 const only = { skip: !scripted && 'plays scripted model turns and the stub agent' };
 
@@ -43,7 +45,7 @@ test('given GitLab mode, when an issue is opened and its author says yes, then t
   const title = 'Member login from GitLab';
   await script(handoverScript({ ch: { link: gitlab.issueUrl(iid) }, title, linkTitle: 'GitLab issue' }));
   await gitlab.issue('We need a login page for members', { description: `${title}.` });
-  await hasNote(iid, '@alice Danke, ich habe deine Anfrage erhalten');
+  await hasNote(iid, plugin.acknowledgeIssue.replace('{username}', 'alice'));
   await hasNote(iid, 'Who signs in, and with what?');
   await gitlab.note(iid, 'yes, hand it over as it is');
   await hasNote(iid, 'Handed over as');
@@ -73,7 +75,7 @@ test('given a ticket on its issue, when it moves on, is done and is reopened, th
   await moveTo(ticket.identifier, 'review', 'done');
   await waitFor('the issue closed', async () => (await gitlab.issueState(iid)) === 'closed');
   const notes = await gitlab.botNotes(iid);
-  assert.match(notes.at(-1), /^Das ist fertig und bereit zum Ausprobieren\./, 'the issue was closed before its final note');
+  assert.ok(notes.at(-1).startsWith(messages.states.done), 'the issue was closed before its final note');
   for (const state of ['working', 'done']) assert.equal(notes.filter((n) => n.startsWith(messages.states[state])).length, 1, `${state} noted more than once`);
 
   await reopen(ticket.identifier);

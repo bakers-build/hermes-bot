@@ -32,7 +32,7 @@ plugin = importlib.util.module_from_spec(_spec)
 sys.modules["bot_channels"] = plugin
 _spec.loader.exec_module(plugin)
 # The real client factory; OpenRequestChannelTool replaces it with a fake.
-SLACK_CLIENT = plugin._slack_client
+SLACK_CLIENT = plugin.slack._slack_client
 
 
 class Outcome(enum.Enum):  # Hermes' ProcessingOutcome
@@ -121,7 +121,7 @@ class LanguageFile(unittest.TestCase):
 class Middleware(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         os.environ.update(SLACK_ALLOWED_CHANNELS=HOME, SLACK_ALLOWED_USERS="U1")
-        with open(os.path.join(DATA, "bot-channels.json"), "w") as fh:
+        with open(os.path.join(DATA, "conversations.json"), "w") as fh:
             json.dump({OPEN: {"name": "req-open"}}, fh)
         self.calls = []
 
@@ -156,7 +156,7 @@ class Middleware(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.calls[-1], ("hermes", {"channel": "CNEW", "ts": "1.1"}))
 
     def record(self, channel):
-        with open(os.path.join(DATA, "bot-channels.json")) as fh:
+        with open(os.path.join(DATA, "conversations.json")) as fh:
             return json.load(fh)[channel]
 
     async def test_the_requesters_slack_email_address_goes_into_the_record_and_the_trusted_line(self):
@@ -243,7 +243,7 @@ class OpenRequestChannelTool(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
         os.environ.update(SLACK_ALLOWED_CHANNELS=HOME, SLACK_ALLOWED_USERS="U1", SLACK_WORKSPACE_URL="https://acme.slack.com/")
-        with open(os.path.join(DATA, "bot-channels.json"), "w") as fh:
+        with open(os.path.join(DATA, "conversations.json"), "w") as fh:
             json.dump({OPEN: {"name": "req-open"}}, fh)
         self.calls = []
         self.taken = set()
@@ -255,7 +255,7 @@ class OpenRequestChannelTool(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(stubs.stop)
         self.ctx = Context()
         plugin.register(self.ctx)
-        plugin._slack_client = lambda: self
+        plugin.slack._slack_client = lambda: self
 
     async def conversations_create(self, name, is_private):
         self.calls.append(("conversations_create", {"name": name, "is_private": is_private}))
@@ -269,7 +269,7 @@ class OpenRequestChannelTool(unittest.IsolatedAsyncioTestCase):
         return json.loads(await result if tool["is_async"] else result)
 
     def record(self, channel):
-        with open(os.path.join(DATA, "bot-channels.json")) as fh:
+        with open(os.path.join(DATA, "conversations.json")) as fh:
             return json.load(fh)[channel]
 
     def test_the_tool_belongs_to_the_cron_only_toolset(self):
@@ -301,7 +301,7 @@ class OpenRequestChannelTool(unittest.IsolatedAsyncioTestCase):
         with self.assertLogs("pm_bot.bot_channels", "ERROR"):
             result = await self.call(title="Security updates")
         self.assertIn("missing_scope", result["error"])
-        with open(os.path.join(DATA, "bot-channels.json")) as fh:
+        with open(os.path.join(DATA, "conversations.json")) as fh:
             self.assertEqual(list(json.load(fh)), [OPEN])
 
     async def test_the_new_channel_is_admitted_with_a_trusted_line_naming_no_requester(self):
@@ -348,7 +348,7 @@ class OpenRequestChannelToolSlack(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(stubs.stop)
         self.ctx = Context()
         plugin.register(self.ctx)
-        client = unittest.mock.patch.object(plugin, "_slack_client", SLACK_CLIENT)
+        client = unittest.mock.patch.object(plugin.slack, "_slack_client", SLACK_CLIENT)
         client.start()
         self.addCleanup(client.stop)
 

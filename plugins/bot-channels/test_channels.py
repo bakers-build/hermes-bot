@@ -5,7 +5,7 @@ import pathlib
 import tempfile
 import unittest
 
-from channels import channel_prompt, language_prompt, open_channels, read_json, request_channel_name, slug, text
+from channels import channel_prompt, language_prompt, migrate, open_channels, read_json, request_channel_name, slug, text
 
 HERE = pathlib.Path(__file__).parent
 
@@ -85,6 +85,32 @@ class ReadJson(unittest.TestCase):
                 self.assertEqual(read_json(path), {})
             with self.assertRaises(ValueError):
                 read_json(path, strict=True)
+
+
+class Migrate(unittest.TestCase):
+    """The plugin's channels moved from bot-channels.json to conversations.json, with their side."""
+
+    def test_the_old_channels_become_slack_conversations_once(self):
+        with tempfile.TemporaryDirectory() as d:
+            pathlib.Path(d, "bot-channels.json").write_text(json.dumps({"C1": {"name": "req-a", "requester": "U1"}}), encoding="utf-8")
+            with self.assertLogs("pm_bot.bot_channels", "WARNING"):
+                migrate(d)
+            self.assertEqual(read_json(pathlib.Path(d, "conversations.json")), {"C1": {"side": "slack", "name": "req-a", "requester": "U1"}})
+            pathlib.Path(d, "bot-channels.json").write_text(json.dumps({"C2": {}}), encoding="utf-8")
+            migrate(d)
+            self.assertEqual(list(read_json(pathlib.Path(d, "conversations.json"))), ["C1"])
+
+    def test_without_an_old_file_nothing_is_written(self):
+        with tempfile.TemporaryDirectory() as d:
+            migrate(d)
+            self.assertFalse(pathlib.Path(d, "conversations.json").exists())
+
+    def test_an_unreadable_old_file_is_left_alone_and_raises(self):
+        with tempfile.TemporaryDirectory() as d:
+            pathlib.Path(d, "bot-channels.json").write_text('{"C1": ', encoding="utf-8")
+            with self.assertRaises(ValueError):
+                migrate(d)
+            self.assertFalse(pathlib.Path(d, "conversations.json").exists())
 
 
 class Texts(unittest.TestCase):

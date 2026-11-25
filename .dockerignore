@@ -2,6 +2,7 @@
 *
 !SOUL.template.md
 !config.template.yaml
+!config.gitlab.yaml
 !render.mjs
 !entrypoint.sh
 !relay/**

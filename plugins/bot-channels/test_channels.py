@@ -5,7 +5,7 @@ import pathlib
 import tempfile
 import unittest
 
-from channels import channel_prompt, language_prompt, open_channels, read_json, request_channel_name, slug, text
+from channels import channel_prompt, language_prompt, migrate, open_channels, read_json, request_channel_name, slug, text
 
 HERE = pathlib.Path(__file__).parent
 
@@ -87,12 +87,38 @@ class ReadJson(unittest.TestCase):
                 read_json(path, strict=True)
 
 
+class Migrate(unittest.TestCase):
+    """The plugin's channels moved from bot-channels.json to conversations.json, with their chat mode."""
+
+    def test_the_old_channels_become_slack_conversations_once(self):
+        with tempfile.TemporaryDirectory() as d:
+            pathlib.Path(d, "bot-channels.json").write_text(json.dumps({"C1": {"name": "req-a", "requester": "U1"}}), encoding="utf-8")
+            with self.assertLogs("pm_bot.bot_channels", "WARNING"):
+                migrate(d)
+            self.assertEqual(read_json(pathlib.Path(d, "conversations.json")), {"C1": {"chat_mode": "slack", "name": "req-a", "requester": "U1"}})
+            pathlib.Path(d, "bot-channels.json").write_text(json.dumps({"C2": {}}), encoding="utf-8")
+            migrate(d)
+            self.assertEqual(list(read_json(pathlib.Path(d, "conversations.json"))), ["C1"])
+
+    def test_without_an_old_file_nothing_is_written(self):
+        with tempfile.TemporaryDirectory() as d:
+            migrate(d)
+            self.assertFalse(pathlib.Path(d, "conversations.json").exists())
+
+    def test_an_unreadable_old_file_is_left_alone_and_raises(self):
+        with tempfile.TemporaryDirectory() as d:
+            pathlib.Path(d, "bot-channels.json").write_text('{"C1": ', encoding="utf-8")
+            with self.assertRaises(ValueError):
+                migrate(d)
+            self.assertFalse(pathlib.Path(d, "conversations.json").exists())
+
+
 class Texts(unittest.TestCase):
     def test_every_text_exists_in_german_and_english(self):
         messages = json.loads((HERE / "messages.json").read_text(encoding="utf-8"))
         self.assertEqual(set(messages), {"de", "en"})
         self.assertEqual(set(messages["de"]), set(messages["en"]))
-        self.assertEqual(set(messages["de"]), {"acknowledge", "opened", "open_failed", "repeat", "originLead"})
+        self.assertEqual(set(messages["de"]), {"acknowledge", "acknowledgeIssue", "opened", "open_failed", "repeat", "originLead"})
 
     def test_placeholders_are_filled_in_the_language(self):
         self.assertEqual(text("en", "opened", user="U1", channel="C1"), "<@U1> I opened <#C1> for this request. Let's continue there.")
@@ -104,6 +130,7 @@ class Texts(unittest.TestCase):
     def test_the_acknowledgement_mentions_the_requester_in_each_language(self):
         for code in ("de", "en"):
             self.assertTrue(text(code, "acknowledge", user="U1").startswith("<@U1> "))
+            self.assertTrue(text(code, "acknowledgeIssue", username="alice").startswith("@alice "))
 
 
 if __name__ == "__main__":

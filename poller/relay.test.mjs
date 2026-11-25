@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { relaySender } from './poller.mjs';
+import { relaySender } from './chat-modes/slack.mjs';
 
 const note = { comment: 'c1', kind: 'question', identifier: 'BB-1', channel: 'C1', thread_ts: '1.2', text: 'Which footer?' };
 

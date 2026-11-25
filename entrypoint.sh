@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # The PM bot container's start, as the hermes user after Hermes' own bootstrap
 # (Dockerfile). On every start it:
-#   1. checks the required env (from the data directory's .env) and names what is missing;
-#   2. renders config.yaml and SOUL.md, with the skill's host context, from the env (render.mjs);
+#   1. checks the required env (from the data directory's .env) and names what is missing, for the
+#      bot's chat mode (PM_BOT_CHAT: slack, the default, or gitlab);
+#   2. renders config.yaml (on GitLab with config.gitlab.yaml merged over it) and SOUL.md, with the
+#      skill's host context, from the env (render.mjs);
 #   3. puts the shipped skills (bb-create-ticket, its recipes and their method
 #      skills, with the bundle files they link to, and the bot's own composer-audit, rendered
 #      like the persona) and the bot-channels plugin into the data directory, replacing them,
@@ -33,7 +35,21 @@ case "$mode" in
 esac
 
 REQUIRED=(BAKERS_URL BAKERS_API_KEY PM_BOT_PROJECT PM_BOT_TICKET_WORKFLOW PM_BOT_MODEL PM_BOT_CLONE_DIR)
-if [ "$mode" = agent ]; then
+# The bot's chat mode, its conversation platform: Slack or GitLab issues (README.md › Chat modes).
+export PM_BOT_CHAT="${PM_BOT_CHAT:-slack}"
+case "$PM_BOT_CHAT" in
+  slack | gitlab) ;;
+  *) echo "pm-bot: PM_BOT_CHAT must be slack or gitlab, not $PM_BOT_CHAT" >&2; exit 1 ;;
+esac
+if [ "$PM_BOT_CHAT" = gitlab ]; then
+  # GitLab's keys first, as the missing ones are named in that order. The configuration and the
+  # persona still name Slack's channel keys, so an empty one gets an inert value; without Slack
+  # tokens Hermes starts no Slack.
+  REQUIRED=(GITLAB_URL GITLAB_PROJECT GITLAB_TOKEN GITLAB_WEBHOOK_URL "${REQUIRED[@]}")
+  unset SLACK_BOT_TOKEN SLACK_APP_TOKEN
+  export SLACK_ALLOWED_CHANNELS="${SLACK_ALLOWED_CHANNELS:-C0000000000}" SLACK_ADMIN_USERS="${SLACK_ADMIN_USERS:-U0000000000}" \
+    SLACK_WORKSPACE_URL="${SLACK_WORKSPACE_URL:-https://slack.invalid}"
+elif [ "$mode" = agent ]; then
   # No Slack: the configuration and the poller still name these keys, so an empty one gets an
   # inert value. The poller's calls go to SLACK_API_URL.
   export SLACK_BOT_TOKEN="${SLACK_BOT_TOKEN:-xoxb-agent}" SLACK_APP_TOKEN="${SLACK_APP_TOKEN:-xapp-agent}" \
@@ -62,6 +78,30 @@ export PM_BOT_CONDUCTOR_TEXT="${PM_BOT_CONDUCTOR:-none}"
 export PM_BOT_MODEL_BASE_URL="${PM_BOT_MODEL_BASE_URL:-https://api.anthropic.com}"
 
 node "$BOT/render.mjs" "$BOT/config.template.yaml" "$DATA/config.yaml"
+# GitLab's part over it (config.gitlab.yaml says how), with Hermes' own YAML reader and writer.
+if [ "$PM_BOT_CHAT" = gitlab ]; then
+  (cd /opt/hermes && .venv/bin/python - "$DATA/config.yaml" "$BOT/config.gitlab.yaml" <<'PY'
+import os, sys
+import hermes_yaml as yaml
+
+target, overlay = sys.argv[1:]
+def merge(base, over):
+    for key, value in over.items():
+        if value is None:
+            base.pop(key, None)
+        elif isinstance(value, dict) and isinstance(base.get(key), dict):
+            merge(base[key], value)
+        else:
+            base[key] = value
+    return base
+config = merge(yaml.safe_load(open(target)), yaml.safe_load(open(overlay)))
+with open(f"{target}.tmp", "w") as fh:
+    yaml.safe_dump(config, fh, sort_keys=False, width=yaml.ROUNDTRIP_YAML_WIDTH)
+os.chmod(f"{target}.tmp", 0o600)
+os.replace(f"{target}.tmp", target)
+PY
+  )
+fi
 node "$BOT/render.mjs" "$BOT/SOUL.template.md" "$DATA/SOUL.md"
 # The shipped skills replace their copies, entry by entry; learned skills stay. The bot's
 # own project-manager skill gave way to them.
@@ -125,7 +165,10 @@ case "${AUDIT_ENABLED:-true}" in
       echo "pm-bot: composer-audit is not registered: fix or remove $DATA/cron/jobs.json and restart" >&2
     else
       audit_prompt="Run the nightly Composer security audit of the project's clone with your skill composer-audit, exactly as it says."
-      audit_args=(--name composer-audit --deliver "slack:$SLACK_ALLOWED_CHANNELS" --skill composer-audit)
+      # On GitLab the answer stays in the job's output: there is no main channel.
+      audit_deliver="slack:$SLACK_ALLOWED_CHANNELS"
+      [ "$PM_BOT_CHAT" = slack ] || audit_deliver=local
+      audit_args=(--name composer-audit --deliver "$audit_deliver" --skill composer-audit)
       for job in "${audit_jobs[@]:1}"; do hermes cron remove "$job" >/dev/null || true; done
       if [ ${#audit_jobs[@]} -gt 0 ]; then
         # A schedule passed to Hermes recomputes the due time from now, so a night missed while the
@@ -160,9 +203,21 @@ ours = sorted(p.manifest.name for p in manager._plugins.values() if p.enabled an
 print("plugins: " + ",".join(ours))
 from hermes_cli.config import load_config
 from hermes_cli.tools_config import _get_platform_tools
-for platform in ("cron", "slack"):
+import os
+chat_mode = os.environ["PM_BOT_CHAT"]
+for platform in ("cron", chat_mode):
     print(f"toolsets {platform}: " + ",".join(sorted(_get_platform_tools(load_config(), platform))))
-assert any(name == "bot-channels" for _, name in manager.get_platform_handler_factories("slack")), "bot-channels registered no Slack handler"
+if chat_mode == "gitlab":
+    # The GitLab chat mode's seams: its platform, the adapter base and the hooks it overrides.
+    from gateway.platform_registry import platform_registry
+    from gateway.platforms.base import BasePlatformAdapter
+    assert platform_registry.is_registered("gitlab"), "bot-channels registered no gitlab platform"
+    print("platforms: gitlab")
+    for hook in ("on_processing_start", "on_processing_complete", "handle_message"):
+        assert inspect.iscoroutinefunction(getattr(BasePlatformAdapter, hook, None)), f"BasePlatformAdapter.{hook} is gone"
+    assert "channel_prompt" in inspect.signature(__import__("gateway.platforms.event", fromlist=["MessageEvent"]).MessageEvent).parameters, "MessageEvent.channel_prompt is gone"
+else:
+    assert any(name == "bot-channels" for _, name in manager.get_platform_handler_factories("slack")), "bot-channels registered no Slack handler"
 assert inspect.iscoroutinefunction(SlackAdapter._handle_slack_message), "SlackAdapter._handle_slack_message is gone"
 for helper in ("_track_reacting_message", "_event_team_id"):
     assert callable(getattr(SlackAdapter, helper, None)), f"SlackAdapter.{helper} is gone"

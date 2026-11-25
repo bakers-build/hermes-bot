@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, it } from 'node:test';
-import { createSlack } from '../../../poller/poller.mjs';
+import { createSlack } from '../../../poller/chat-modes/slack.mjs';
 import { createRecorder } from './recorder.mjs';
 
 let server;

@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 // The PM bot's poller. Every interval it reads the project's tickets from
-// bakers.build through its tools and, for each ticket with a Slack conversation (its newest
-// channel link, else the thread of its first `chat` link; a sub-ticket without one shares its
-// ancestor's): posts each state change there once and relays its open question or technical
+// bakers.build through its tools and, for each ticket with a conversation in the bot's chat mode
+// (PM_BOT_CHAT, poller/chat-modes: a Slack channel or thread, or a GitLab issue; a sub-ticket without
+// one shares its ancestor's): posts each state change there once and relays its open question or technical
 // problem once. Between states it posts, once each, when a run starts, when a run ends without
 // moving the ticket on, a new summary's outcome, the links in its Manual review on a host under
-// PREVIEW_ZONES, a new preview link, and a heartbeat while a run works and the conversation has been quiet for PM_BOT_HEARTBEAT_INTERVAL. For the channels the bot created it renames a request channel after its
-// ticket, archives it after the final post, opens a fresh one when the ticket is reopened, and
-// closes a request channel that stayed silent for a week without a ticket. It posts in the bot's
+// PREVIEW_ZONES, a new preview link, and a heartbeat while a run works and the conversation has been quiet for PM_BOT_HEARTBEAT_INTERVAL. For the conversations the bot opened it owes the chat mode's steps: on
+// the ticket's arrival, closing after the final post, reopening with the ticket, and closing one
+// that stayed silent for a week without a ticket. It posts in the bot's
 // language, which the bot-channels plugin writes to bot-language.json. No LLM, no dependencies.
 //
 //   node poller/poller.mjs          # loop
@@ -17,90 +17,55 @@
 // While bakers.build is unreachable a pass fails, is logged and keeps the state
 // file as it was; the next pass catches up, so nothing is lost or posted twice.
 
-import { spawn } from 'node:child_process';
 import { readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createBakersClient } from '../lib/bakers-client.mjs';
-import { channelSteps, CLOSED, ticketChannelName, WEEK } from './channels.mjs';
+import { channelSteps, CLOSED } from './channels.mjs';
 import { diff, reachedDone } from './diff.mjs';
 import { heartbeatInterval, pollInterval } from './interval.mjs';
 import { openNote, QUESTION_LABEL, relay, TECHNICAL_PROBLEM_LABEL } from './questions.mjs';
-import { conversation, conversations } from './tickets.mjs';
+import { conversations } from './tickets.mjs';
 import { withTicket } from './ticket-footer.mjs';
 import { forget, previewZones, updates } from './updates.mjs';
-
-const fill = (template, values) => template.replace(/\{(\w+)\}/g, (_, key) => values[key]);
+import { createGitLab, createGitLabChatMode } from './chat-modes/gitlab.mjs';
+import { createSlack, createSlackChatMode, relaySender } from './chat-modes/slack.mjs';
 
 // shortcut: a ticket above 1000 comments loses the oldest, read through bakers_comment_read then.
 const ALL_COMMENTS = 1000;
 
-/** The Slack Web API calls the poller makes. */
-export function createSlack({ url = 'https://slack.com/api', token }) {
-  async function call(method, body) {
-    const res = await fetch(`${url}/${method}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json; charset=utf-8', authorization: `Bearer ${token}` },
-      body: JSON.stringify(body),
-    });
-    const answer = await res.json();
-    if (!answer.ok) throw Object.assign(new Error(`${method} failed: ${answer.error}`), { code: answer.error });
-    return answer;
-  }
-  // A call whose listed errors mean it is already done.
-  const settled = (codes) => (error) => {
-    if (!codes.includes(error.code)) throw error;
-  };
-  return {
-    // A message, in a thread when thread_ts is given; returns its ts.
-    post: async ({ channel, thread_ts, text }) => (await call('chat.postMessage', { channel, thread_ts, text })).ts,
-    // A public channel; returns its ID.
-    create: async (name) => (await call('conversations.create', { name, is_private: false })).channel.id,
-    invite: (channel, user) => call('conversations.invite', { channel, users: user }).catch(settled(['already_in_channel'])),
-    rename: (channel, name) => call('conversations.rename', { channel, name }),
-    archive: (channel) => call('conversations.archive', { channel }).catch(settled(['already_archived'])),
-    // The newest message's ts in epoch milliseconds, or null.
-    lastMessage: async (channel) => {
-      const [latest] = (await call('conversations.history', { channel, limit: 1 })).messages ?? [];
-      return latest ? Number(latest.ts) * 1000 : null;
-    },
-  };
-}
+/**
+ * The bot's chat mode (PM_BOT_CHAT): where requesters talk to it. One module per mode in
+ * poller/chat-modes/, each factory returning exactly these members (chat-modes/chat-mode.test.mjs).
+ * A step gets `ctx` = {state, messages, client, now, writeState}, the step from channelSteps and the
+ * plugin's conversations; it records what it did in `ctx.state.channels`, so a pass resumes at the step not yet done.
+ *
+ * @typedef {object} ChatMode
+ * @property {string} name the PM_BOT_CHAT value
+ * @property {(links: {uri: string, title?: string}[]) => {channel: string, thread_ts?: string, url: string} | null} conversationOf a ticket's conversation from its links, or null
+ * @property {(message: {channel: string, thread_ts?: string, text: string}) => Promise<unknown>} post a post into a conversation
+ * @property {(message: {channel: string, thread_ts?: string, text: string}) => Promise<unknown>} relay the post of a question or technical problem
+ * @property {(ctx: object, step: object, bot: object) => Promise<void>} onTicket a conversation the bot opened, now linked by its ticket
+ * @property {(ctx: object, step: object, bot: object) => Promise<void>} close the ticket is done or cancelled, its final state posted
+ * @property {(ctx: object, step: object, bot: object) => Promise<void>} reopen the ticket is open again after close
+ * @property {(ctx: object, step: object, bot: object) => Promise<void>} expireSilent a week silent without a ticket
+ */
 
-// A relayed note goes through Hermes, which also adds it to the conversation's
-// session: the agent knows the question or technical problem when someone there answers.
-export function hermesSend({ channel, thread_ts, text }) {
-  return new Promise((resolve, reject) => {
-    const child = spawn('hermes', ['send', '--to', thread_ts ? `slack:${channel}:${thread_ts}` : `slack:${channel}`, '--quiet', '--file', '-'], { stdio: ['pipe', 'ignore', 'pipe'] });
-    let stderr = '';
-    child.stderr.on('data', (chunk) => (stderr += chunk));
-    child.on('error', reject);
-    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`hermes send exited ${code}: ${stderr.trim()}`))));
-    child.stdin.end(text);
-  });
-}
-
-// The relay's way out, by where the poller's Slack is: Slack itself (no SLACK_API_URL) through
-// hermes send, which mirrors into the channel's gateway session; another Slack API, which hermes send
-// cannot reach, through the poller's own Slack client. That one has no gateway session to mirror into.
-export function relaySender({ slackApiUrl, slack, hermes = hermesSend }) {
-  if (!slackApiUrl) return hermes;
-  return async ({ channel, thread_ts, text }) => {
-    await slack.post({ channel, thread_ts, text });
-  };
-}
+// The poller's steps per channelSteps kind, each a ChatMode member.
+const STEP = { rename: 'onTicket', archive: 'close', reopen: 'reopen', abandon: 'expireSilent' };
 
 /**
- * @param {{client: ReturnType<typeof createBakersClient>, slack: ReturnType<typeof createSlack>,
- *   send: (message: {comment: string, kind: 'question' | 'technical_problem', identifier: string, channel: string, thread_ts?: string, text: string}) => Promise<void>,
- *   stateFile: string, botChannelsFile: string, languageFile: string, workspaceUrl: string, now?: () => number,
+ * @param {{client: ReturnType<typeof createBakersClient>, chatMode: ChatMode,
+ *   stateFile: string, conversationsFile: string, legacyFile?: string, languageFile: string, now?: () => number,
  *   project: string, messages: {de: any, en: any}, heartbeat?: number, previewZones?: string[], log?: {log: Function, error: Function}}} options
  *   heartbeat: the quiet time in ms after which a working ticket's conversation gets a heartbeat
- *   botChannelsFile: the request channels the bot's plugin opened, which only the plugin writes
+ *   chatMode: the bot's chat mode (ChatMode above)
+ *   conversationsFile: the conversations the bot's plugin opened (conversations.json), which only the plugin writes;
+ *     legacyFile: bot-channels.json, read while the plugin has not moved it to conversationsFile yet
  *   languageFile: the bot's language as the plugin read it, {"language": "<ISO 639-1 code>"}; only the plugin writes it
  *   messages: the fixed texts per language
  *   previewZones: the DNS zones whose hosts' links in a summary's Manual review are posted; none posts none
  */
-export function createPoller({ client, slack, send, stateFile, botChannelsFile, languageFile, workspaceUrl, now = Date.now, project, messages: texts, heartbeat = heartbeatInterval(), previewZones: zones = [], log = console }) {
+export function createPoller({ client, chatMode, stateFile, conversationsFile, legacyFile, languageFile, now = Date.now, project, messages: texts, heartbeat = heartbeatInterval(), previewZones: zones = [], log = console }) {
   const stamp = () => new Date().toISOString();
   // The texts of the current pass: the plugin's language, German without texts for it.
   let messages = texts.de;
@@ -119,7 +84,7 @@ export function createPoller({ client, slack, send, stateFile, botChannelsFile, 
           url: t.url,
           origin: t.origin,
           state: t.state,
-          conversation: conversation(t.links),
+          conversation: chatMode.conversationOf(t.links),
           links: t.links ?? [],
           labels: t.labels ?? [],
           frozen: Boolean(t.frozen),
@@ -198,7 +163,7 @@ export function createPoller({ client, slack, send, stateFile, botChannelsFile, 
     for (const t of all) if (archived(state, t) && state.tickets?.[t.identifier] !== undefined) next[t.identifier] = state.tickets[t.identifier];
     for (const p of posts) {
       try {
-        await slack.post(p);
+        await chatMode.post(p);
         stampPost(state, p);
         // The ticket's own channel may be archived only after this post.
         const record = !p.thread_ts && state.channels[p.channel];
@@ -233,7 +198,7 @@ export function createPoller({ client, slack, send, stateFile, botChannelsFile, 
     for (const post of selected.posts) {
       try {
         const ticket = current.find((t) => t.identifier === post.identifier);
-        await send(post.kind === 'technical_problem' ? { ...post, text: withTicket(post.text, ticket, messages) } : post);
+        await chatMode.relay(post.kind === 'technical_problem' ? { ...post, text: withTicket(post.text, ticket, messages) } : post);
         state.relayed.push(post.comment);
         stampPost(state, post);
         log.log(`${stamp()} relayed ${post.kind} ${post.comment} of ${post.identifier}`);
@@ -271,7 +236,7 @@ export function createPoller({ client, slack, send, stateFile, botChannelsFile, 
         continue;
       }
       try {
-        await slack.post(p);
+        await chatMode.post(p);
         stampPost(state, p);
         log.log(`${stamp()} posted an update of ${p.identifier}`);
       } catch (error) {
@@ -283,80 +248,11 @@ export function createPoller({ client, slack, send, stateFile, botChannelsFile, 
     }
   }
 
-  // The first free name from generation n on: Slack answers name_taken for a name in use.
-  async function freeName(ticket, n, use) {
-    for (let tries = 0; ; tries += 1, n += 1) {
-      const name = ticketChannelName(ticket.identifier, ticket.title, n);
-      try {
-        return { name, generation: n, id: await use(name) };
-      } catch (error) {
-        if (error.code !== 'name_taken' || tries >= 20) throw error;
-      }
-    }
-  }
-
-  // Each step is recorded before the next, so a failure resumes at the step not yet done
-  // and never repeats a finished one.
-  const steps = {
-    async rename(state, { channel, ticket }, bot) {
-      const record = (state.channels[channel] ??= { ticket: ticket.identifier, requester: bot[channel]?.requester ?? null });
-      const { name, generation } = await freeName(ticket, 1, (n) => slack.rename(channel, n));
-      Object.assign(record, { name, generation, renamed: true });
-    },
-    async archive(state, { channel }) {
-      await slack.archive(channel);
-      state.channels[channel].archived = true;
-    },
-    async reopen(state, { channel, ticket }) {
-      const old = state.channels[channel];
-      const next = (old.successor ??= {});
-      if (!next.channel) {
-        const created = await freeName(ticket, (old.generation ?? 1) + 1, (n) => slack.create(n));
-        Object.assign(next, { channel: created.id, name: created.name, generation: created.generation });
-        // Recorded at once: should the link be stored but its reply lost, the plugin still admits it and it is still archived.
-        state.channels[created.id] = { ticket: ticket.identifier, requester: old.requester, name: created.name, generation: created.generation, renamed: true, previous: channel };
-        await writeState(state);
-      }
-      if (!next.invited) {
-        if (old.requester) await slack.invite(next.channel, old.requester);
-        next.invited = true;
-        await writeState(state);
-      }
-      if (!next.posted) {
-        const text = `${messages.states[ticket.state] ?? ''}\n\n${fill(messages.reopened, { previous: `<#${channel}>` })}`.trim();
-        await slack.post({ channel: next.channel, text });
-        next.posted = true;
-        state.tickets = { ...state.tickets, [ticket.identifier]: ticket.state };
-        await writeState(state);
-      }
-      const uri = `${workspaceUrl.replace(/\/$/, '')}/archives/${next.channel}`;
-      await client.tool('bakers_ticket_transition', { ticket: ticket.id, links: [{ uri, title: 'Slack channel' }] });
-      delete old.successor;
-      old.reopened = next.channel;
-      ticket.conversation = { channel: next.channel, url: uri };
-    },
-    async abandon(state, { channel }) {
-      const record = (state.channels[channel] ??= {});
-      if (!record.closing) {
-        const last = await slack.lastMessage(channel);
-        if (last && now() - last < WEEK) {
-          record.seen = last;
-          return;
-        }
-        await slack.post({ channel, text: messages.abandoned });
-        record.closing = true;
-        await writeState(state);
-      }
-      await slack.archive(channel);
-      record.archived = true;
-    },
-  };
-
   async function channelWork(state, current, kinds) {
-    const bot = await readJson(botChannelsFile, {});
+    const bot = await readJson(conversationsFile, null) ?? (legacyFile ? await readJson(legacyFile, {}) : {});
     for (const step of channelSteps(state, current, bot, now()).filter((s) => kinds.includes(s.kind))) {
       try {
-        await steps[step.kind](state, step, bot);
+        await chatMode[STEP[step.kind]]({ state, messages, client, now, writeState }, step, bot);
         await writeState(state);
         log.log(`${stamp()} ${step.kind} ${step.channel}${step.ticket ? ` of ${step.ticket.identifier}` : ''}`);
       } catch (error) {
@@ -397,15 +293,24 @@ if (isMain) {
     if (!value) throw new Error(`${name} is not set`);
     return value;
   };
-  const slack = createSlack({ url: process.env.SLACK_API_URL || undefined, token: env('SLACK_BOT_TOKEN') });
+  // One chat mode per bot (PM_BOT_CHAT, default slack).
+  const chat = process.env.PM_BOT_CHAT || 'slack';
+  let chatMode;
+  if (chat === 'slack') {
+    const slack = createSlack({ url: process.env.SLACK_API_URL || undefined, token: env('SLACK_BOT_TOKEN') });
+    chatMode = createSlackChatMode({ slack, send: relaySender({ slackApiUrl: process.env.SLACK_API_URL, slack }), workspaceUrl: env('SLACK_WORKSPACE_URL') });
+  } else if (chat === 'gitlab') {
+    chatMode = createGitLabChatMode({ gitlab: createGitLab({ url: env('GITLAB_URL'), project: env('GITLAB_PROJECT'), token: env('GITLAB_TOKEN') }) });
+  } else {
+    throw new Error(`PM_BOT_CHAT must be slack or gitlab, not ${chat}`);
+  }
   const poller = createPoller({
     client: createBakersClient({ url: env('BAKERS_URL'), apiKey: env('BAKERS_API_KEY') }),
-    slack,
-    send: relaySender({ slackApiUrl: process.env.SLACK_API_URL, slack }),
+    chatMode,
     stateFile: join(env('HERMES_HOME'), 'poller-state.json'),
-    botChannelsFile: join(env('HERMES_HOME'), 'bot-channels.json'),
+    conversationsFile: join(env('HERMES_HOME'), 'conversations.json'),
+    legacyFile: join(env('HERMES_HOME'), 'bot-channels.json'),
     languageFile: join(env('HERMES_HOME'), 'bot-language.json'),
-    workspaceUrl: env('SLACK_WORKSPACE_URL'),
     project: env('PM_BOT_PROJECT'),
     messages: JSON.parse(await readFile(new URL('./messages.json', import.meta.url), 'utf8')),
     heartbeat: heartbeatInterval(process.env.PM_BOT_HEARTBEAT_INTERVAL),

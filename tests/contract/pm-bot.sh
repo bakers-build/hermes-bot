@@ -50,6 +50,9 @@
 #   - the end-to-end test's overlay (tests/e2e/compose.yaml) changes only pm-bot's command,
 #     networks and depends_on, and its env file has every key of .env.example
 #   - platform_toolsets.cli equals .slack, model.base_url comes from PM_BOT_MODEL_BASE_URL
+#   - the GitLab chat mode (config.gitlab.yaml) runs with Slack's toolsets and no GitLab tool for the
+#     model, and its GitLab calls reach only the bot's user, a user's public profile and the
+#     project's issues, notes, award emoji and hooks
 #     (default Anthropic's), and mode agent runs the poller without the gateway
 #   - CI's image job runs the end-to-end test on the image it built, before Publish
 # Needs python3 with PyYAML.
@@ -228,6 +231,52 @@ sys.exit(1 if errors else 0)
 PY
 pass "configuration template keeps the lock-down"
 
+# The GitLab chat mode: the overlay swaps Slack for the gitlab platform with Slack's toolsets and no
+# GitLab tool for the model; the bot's GitLab calls touch only its own user, a user's public
+# profile, the project's issues, notes, award emoji and its own webhook.
+python3 - "$TEMPLATE" "$BOT/config.gitlab.yaml" "$BOT/plugins/bot-channels/gitlab.py" "$BOT/poller/chat-modes/gitlab.mjs" <<'PY' || fail "the GitLab chat mode breaks the lock-down (see above)"
+import re, sys, yaml
+
+template, overlay_file, plugin_file, poller_file = sys.argv[1:]
+cfg, overlay = yaml.safe_load(open(template)), yaml.safe_load(open(overlay_file))
+errors = []
+def need(cond, msg):
+    if not cond:
+        errors.append(msg)
+
+toolsets = overlay.get("platform_toolsets") or {}
+need(toolsets.get("gitlab") == cfg["platform_toolsets"]["slack"], "platform_toolsets.gitlab is not exactly Slack's")
+need(toolsets.get("cron") == ["terminal", "skills", "mcp-bakers"], f"platform_toolsets.cron on GitLab is {toolsets.get('cron')}, not terminal, skills and mcp-bakers")
+need("slack" in overlay and overlay["slack"] is None and toolsets.get("slack", 1) is None, "the overlay leaves Slack's configuration in place")
+need((overlay.get("platforms") or {}).get("gitlab", {}).get("enabled") is True, "the overlay does not enable the gitlab platform")
+need(set(overlay) <= {"slack", "platforms", "display", "platform_toolsets", "known_plugin_toolsets"},
+     f"the overlay changes {sorted(set(overlay) - {'slack', 'platforms', 'display', 'platform_toolsets', 'known_plugin_toolsets'})}")
+need((((overlay.get("display") or {}).get("platforms") or {}).get("gitlab") or {}).get("interim_assistant_messages") is False,
+     "display.platforms.gitlab.interim_assistant_messages is not false: the agent's working notes reach the issue")
+need(not any("gitlab" in name.lower() for name in cfg.get("mcp_servers") or {}), "an MCP server gives the model GitLab")
+
+plugin = open(plugin_file).read()
+urls = re.findall(r'f"\{self\.(root|base)\}([^"]*)"', plugin)
+allowed = [("root", r"/api/v4/user"), ("root", r"/api/v4/users/\{int\(user_id\)\}"), ("root", r"/api/v4/projects/\{urllib\.parse\.quote\(project, safe=''\)\}"),
+           ("base", r"/issues(/\{int\(iid\)\})?(/notes(\?[^\"]*)?)?(\?[^\"]*)?"), ("base", r"/issues/\{int\(iid\)\}"), ("base", r"/hooks(/\{int\(hook_id\)\}(/test/push_events)?)?"),
+           ("root", r"/\{self\.project\}/-/issues/\{iid\}")]  # the issue's web link, not a call
+for kind, path in urls:
+    need(any(kind == k and re.fullmatch(p, path) for k, p in allowed), f"gitlab.py calls {{{kind}}}{path}")
+need(urls, "gitlab.py builds no GitLab URL the check can read")
+for path in re.findall(r'f"(\{self\._awards[^"]*|[^"]*award_emoji[^"]*)"', plugin):
+    need(re.fullmatch(r"\{self\._awards\(iid, note_id\)\}/\{int\(award_id\)\}|/award_emoji", path), f"gitlab.py calls award emoji at {path}")
+need(plugin.count("urllib.request.urlopen") == 1, "gitlab.py reaches GitLab outside Api.call")
+poller = open(poller_file).read()
+need(re.findall(r"/api/v4/[^`'\"]*", poller) == ["/api/v4/projects/${encodeURIComponent(project)}/issues"], "the poller calls GitLab outside the project's issues")
+for e in errors:
+    print("FAIL:", e, file=sys.stderr)
+sys.exit(1 if errors else 0)
+PY
+for key in PM_BOT_CHAT GITLAB_URL GITLAB_PROJECT GITLAB_TOKEN GITLAB_WEBHOOK_URL GITLAB_WEBHOOK_PORT; do
+  grep -qE "^$key=" "$BOT/.env.example" || fail ".env.example does not show $key"
+done
+pass "the GitLab chat mode: Slack's toolsets, no GitLab tool for the model, calls only to its user, users, the project's issues, notes, award emoji and hooks"
+
 # Every bakers tool the bot names is one the server serves. The stub's TOOLS is the recorded copy of
 # the server's names; a tool the server renamed fails here, not as "Tool not found" on a box.
 python3 - "$TEMPLATE" <<'PY' || fail "the bot names a bakers tool the server does not serve (see above)"
@@ -312,6 +361,14 @@ for word in bb-create-ticket 'Slack user' /archives/ labels_remove frozen 'Answe
   grep -qF -- "$word" "$SOUL" || fail "$SOUL does not name $word"
 done
 pass "SOUL.template.md gives bb-create-ticket its host context and carries status and answers"
+
+# An answer that also asks for more is first an answer: the Question branch precedes the new-request one.
+answers=$(grep -nF -- "labelled \`Question\` and frozen → *Answers*" "$SOUL" | head -1 | cut -d: -f1)
+different=$(grep -nF -- '- a **new, different request**' "$SOUL" | head -1 | cut -d: -f1)
+[ -n "$answers" ] && [ -n "$different" ] && [ "$answers" -lt "$different" ] \
+  && grep -qF 'a message that answers the open question and also asks for more is an answer' "$SOUL" \
+  || fail "$SOUL lets a new request win over an answer to the open question"
+pass "SOUL.template.md passes an answer on before it turns down an extra wish"
 
 # The hand-over: the bot judges whether a code review is advisable, proposes it without naming
 # its cost (the requester already knows a review is charged), and sets human-review only after

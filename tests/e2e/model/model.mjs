@@ -7,7 +7,7 @@
 // A script is a list of rules, tried in order against each request's last turn:
 //   {user: <regex>}                 a user turn whose text matches
 //   {tool_result: <regex>, after?}  a tool result whose text matches, of a tool whose name ends with `after`
-//   {system: <regex>}               any turn of a request whose system prompt matches (Hermes' side calls)
+//   {system: <regex>}               any turn of a request whose system prompt matches (Hermes' auxiliary calls)
 // and a `reply`: a list of {text} and {tool, input} blocks. A tool is named by the suffix of a tool
 // the request offers (bakers_ticket_create, open_request_channel), directly or deferred behind Hermes' tool_call. Named groups of the matching regex are kept and fill
 // `{{name}}` in later replies. A rule answers once unless it has `repeat: true`. A turn no rule

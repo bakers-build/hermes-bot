@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# The PM bot's end-to-end test: a bakers.build site, the bot's image, a conductor, a scripted model
-# and a Slack recorder in Docker (tests/e2e/compose.yaml on top of compose.yaml). It needs Docker
+# The PM bot's end-to-end test: a bakers.build site, the bot's image, a conductor, a scripted model,
+# a Slack recorder, and the bot in GitLab mode with a GitLab stand-in, in Docker (tests/e2e/compose.yaml on top of compose.yaml). It needs Docker
 # and this clone; no Slack, bakers.build or model credentials.
 #
 #   tests/e2e/run.sh [IMAGE] [--real] [--keep] [--only <scenario>]
 #       start the stack, seed the site, run every scenario (or one), tear down. Without IMAGE the
 #       working copy is built. Exits non-zero naming each failed scenario; the stack's logs, the
-#       model's turns, the Slack calls and the poller's state are then in tests/e2e/out/.
+#       model's turns, the Slack and GitLab calls and the pollers' state are then in tests/e2e/out/.
 #       --real   a real model for the bot and Claude Code for the conductor, from
 #                ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN; a failure may then be the model's
 #       --keep   leave the stack running afterwards (tests/e2e/run.sh down removes it)
@@ -27,7 +27,7 @@ dc() { docker compose "${COMPOSE[@]}" "$@"; }
 
 # The variables both compose files read.
 export_stack() {
-  export PM_BOT_IMAGE="$1" PM_BOT_DATA="$OUT/data" PM_BOT_CLONE="$OUT/clone" PM_BOT_UID="$(id -u)" PM_BOT_GID="$(id -g)" \
+  export PM_BOT_IMAGE="$1" PM_BOT_DATA="$OUT/data" PM_BOT_GITLAB_DATA="$OUT/data-gitlab" PM_BOT_CLONE="$OUT/clone" PM_BOT_UID="$(id -u)" PM_BOT_GID="$(id -g)" \
     E2E_AGENT="$OUT/agent" E2E_CONDUCTOR="$OUT/conductor" E2E_CONDUCTOR_AGENT="$2" BAKERS_VERSION="${BAKERS_VERSION:-0.11.0}"
 }
 
@@ -63,9 +63,9 @@ seed() {
   local key token base
   key="${ANTHROPIC_API_KEY:-}" token="${CLAUDE_CODE_OAUTH_TOKEN:-}" base=http://model/anthropic
   if [ "$mode" = scripted ]; then key=e2e-scripted token= ; else base=https://api.anthropic.com; fi
-  node - "$E2E/pm-bot.env" "$OUT/seed.json" "$OUT/data/.env" "$base" "$key" "$token" http://nginx <<'NODE'
+  node - "$E2E/pm-bot.env" "$OUT/seed.json" "$OUT/data/.env" "$base" "$key" "$token" http://nginx "$OUT/data-gitlab/.env" <<'NODE'
 const fs = require('node:fs');
-const [template, seedFile, target, base, key, token, site] = process.argv.slice(2);
+const [template, seedFile, target, base, key, token, site, gitlabTarget] = process.argv.slice(2);
 const seed = JSON.parse(fs.readFileSync(seedFile, 'utf8'));
 const values = {
   PM_BOT_MODEL_BASE_URL: base, ANTHROPIC_API_KEY: key, CLAUDE_CODE_OAUTH_TOKEN: token, BAKERS_URL: site,
@@ -76,6 +76,8 @@ const text = fs.readFileSync(template, 'utf8').replace(/^(\w+)=@(\w+)@$/gm, (_, 
   return `${key}=${values[name]}`;
 });
 fs.writeFileSync(target, text, { mode: 0o600 });
+// The GitLab bot: the same keys, in the GitLab chat mode.
+fs.writeFileSync(gitlabTarget, text.replace(/^PM_BOT_CHAT=.*$/m, 'PM_BOT_CHAT=gitlab'), { mode: 0o600 });
 NODE
   [ $? = 0 ] || return 1
   cp "$OUT/seed.json" "$OUT/conductor/seed.json" || return
@@ -87,17 +89,17 @@ start() {
   local image="$1" mode="$2" agent="$3"
   dc down -v --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$OUT"
-  mkdir -p "$OUT/data" "$OUT/clone" "$OUT/agent" "$OUT/conductor"
+  mkdir -p "$OUT/data" "$OUT/data-gitlab" "$OUT/clone" "$OUT/agent" "$OUT/conductor"
   # The clone the bot's clone-reader sees: any project's code; this repository's README will do.
   cp "$ROOT/README.md" "$OUT/clone/"
   export_stack "$image" "$agent"
 
-  say "starting the site (bakers.build $BAKERS_VERSION), the model and the Slack recorder"
-  dc up -d nginx model slack-recorder >&2 || return
+  say "starting the site (bakers.build $BAKERS_VERSION), the model, the Slack recorder and the GitLab stand-in"
+  dc up -d nginx model slack-recorder gitlab >&2 || return
   seed "$mode" || return
 
-  say "starting the bot (mode agent) and the conductor"
-  dc up -d --build pm-bot conductor >&2
+  say "starting the bot (mode agent), the GitLab bot (mode run) and the conductor"
+  dc up -d --build pm-bot pm-bot-gitlab conductor >&2
 }
 
 # Everything a failed run leaves for its reader.
@@ -105,15 +107,17 @@ collect() {
   mkdir -p "$OUT/logs"
   dc logs --no-color --timestamps >"$OUT/logs/compose.log" 2>&1 || true
   local service port
-  for service in model slack-recorder advisories; do
+  for service in model slack-recorder advisories gitlab; do
     port="$(dc port "$service" 80 2>/dev/null | sed 's/.*://')" || continue
     case "$service" in
       model) curl -fsS "http://127.0.0.1:$port/_log" >"$OUT/logs/model-turns.json" || true ;;
       slack-recorder) curl -fsS "http://127.0.0.1:$port/_calls" >"$OUT/logs/slack-calls.json" || true ;;
       advisories) curl -fsS "http://127.0.0.1:$port/_calls" >"$OUT/logs/advisory-calls.json" || true ;;
+      gitlab) curl -fsS "http://127.0.0.1:$port/_state" >"$OUT/logs/gitlab-state.json" || true ;;
     esac
   done
   cp "$OUT/data/poller-state.json" "$OUT/logs/" 2>/dev/null || true
+  cp "$OUT/data-gitlab/poller-state.json" "$OUT/logs/gitlab-poller-state.json" 2>/dev/null || true
   # The nightly audit's runs: prompt, answer or error.
   cp -R "$OUT/data/cron/output" "$OUT/logs/cron-output" 2>/dev/null || true
   say "logs in $OUT/logs"
@@ -131,7 +135,7 @@ scenarios() {
   E2E_OUT="$OUT" E2E_MODE="$mode" E2E_COMPOSE="$(printf '%s\n' "${COMPOSE[@]}" | node -e 'process.stdout.write(JSON.stringify(require("fs").readFileSync(0,"utf8").trim().split("\n")))')" \
     node --test --test-concurrency=1 --test-reporter=spec "${files[@]}" || status=$?
   # No Slack: nothing in the bot's container reached slack.com (Hermes logs each Slack API error).
-  if grep -rlF 'slack.com/api' "$OUT/data/logs" >&2; then
+  if grep -rlF 'slack.com/api' "$OUT/data/logs" "$OUT/data-gitlab/logs" >&2; then
     say "the bot called slack.com (see the logs above)"
     status=1
   fi

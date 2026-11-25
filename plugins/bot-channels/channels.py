@@ -1,5 +1,6 @@
-"""Core of the bot-channels plugin: request-channel names, the set of open bot channels,
-the channel prompts, the plugin's Slack texts, and the state-file read. No Hermes import.
+"""Core of the bot-channels plugin, shared by its chat modes: the state files and their read, write and
+one-time move, request-channel names, the set of open conversations, the trusted lines and the
+plugin's texts. No Hermes import.
 
 shortcut: two copies of the slug rule (here and poller/channels.mjs), held together by
 slug-examples.json; merge them if a third writer appears.
@@ -7,11 +8,19 @@ slug-examples.json; merge them if a third writer appears.
 
 import json
 import logging
+import os
 import pathlib
 import re
 import unicodedata
 
 logger = logging.getLogger("pm_bot.bot_channels")
+
+# The state files: the plugin writes conversations.json (every conversation it opened, with its
+# chat mode) and bot-language.json; the poller writes poller-state.json. Each reads the other's.
+DATA = os.environ.get("HERMES_HOME") or "/opt/data"
+CONVERSATIONS_FILE = os.path.join(DATA, "conversations.json")
+LANGUAGE_FILE = os.path.join(DATA, "bot-language.json")
+POLLER_FILE = os.path.join(DATA, "poller-state.json")
 
 MESSAGES = json.loads((pathlib.Path(__file__).parent / "messages.json").read_text(encoding="utf-8"))
 DEFAULT_LANGUAGE = "de"
@@ -69,6 +78,15 @@ def channel_prompt(channel_id, workspace_url, ticket, code=DEFAULT_LANGUAGE, req
     )
 
 
+def issue_prompt(iid, link, ticket, username, requester_email=None, code=DEFAULT_LANGUAGE):
+    """The trusted line Hermes puts before each turn on a GitLab issue: what the model cannot see."""
+    return (
+        f"This is the GitLab issue {iid}. Its conversation link is {link}. "
+        f"Its ticket: {ticket or 'none yet'}. Its requester: GitLab user @{username or 'unknown'}. "
+        f"Its requester's e-mail address: {requester_email or 'none'}. {language_prompt(code)}"
+    )
+
+
 def read_json(path, strict=False):
     """A state file's JSON, {} when it is missing. An unreadable file is logged and read as {},
     or raises when ``strict``: a caller that writes the file back must not wipe it."""
@@ -84,8 +102,28 @@ def read_json(path, strict=False):
         return {}
 
 
+def write_json(path, value):
+    """``value`` as JSON to ``path``, atomically."""
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(value, fh, indent=2)
+    os.replace(tmp, path)
+
+
+def migrate(data):
+    """Moves the Slack channels of ``bot-channels.json``, which the plugin wrote before chat modes, into
+    ``conversations.json`` as Slack entries, once: only while conversations.json does not exist.
+    The old file stays as it was."""
+    target, legacy = os.path.join(data, "conversations.json"), os.path.join(data, "bot-channels.json")
+    if os.path.exists(target) or not os.path.exists(legacy):
+        return
+    channels = read_json(legacy, strict=True)
+    write_json(target, {key: {"chat_mode": "slack", **(value or {})} for key, value in channels.items()})
+    logger.warning("bot-channels: moved %d channels from bot-channels.json to conversations.json", len(channels))
+
+
 def text(code, key, **values):
-    """The plugin's Slack text ``key`` in language ``code``, German when it has none."""
+    """The plugin's text ``key`` in language ``code``, German when it has none."""
     return MESSAGES.get(code, MESSAGES[DEFAULT_LANGUAGE])[key].format(**values)
 
 

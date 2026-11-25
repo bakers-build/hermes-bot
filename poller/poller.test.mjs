@@ -253,6 +253,14 @@ test('a linked request channel is renamed after its ticket, with -2 when the nam
   assert.deepEqual(state().channels.C0000000001, { ticket: 'ACME-1', requester: 'U0000000007', name: 'acme-1-comic-sans-2', generation: 2, renamed: true });
 });
 
+test('while the plugin has not moved bot-channels.json to conversations.json, its channels are still renamed', async (t) => {
+  const { s, slack, poller, legacyChannels } = await setup(t);
+  legacyChannels(requestChannel());
+  s.addTicket({ title: 'Comic Sans', state: 'qualification', links: [channel()] });
+  await poller.pass();
+  assert.deepEqual(slack.calls.filter((c) => c.method === 'conversations.rename').map((c) => c.body.name), ['acme-1-comic-sans']);
+});
+
 test('done is posted, then the channel archived; a failed archive retries only the archive', async (t) => {
   const { s, slack, poller, botChannels, state } = await setup(t);
   botChannels(requestChannel());
